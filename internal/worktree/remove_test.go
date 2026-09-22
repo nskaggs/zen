@@ -6,6 +6,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
+
+	"github.com/mgreau/zen/internal/agent"
 )
 
 func removalFixture(t *testing.T) (string, string) {
@@ -50,12 +52,18 @@ func TestRemove(t *testing.T) {
 			writeRemovalFile(t, path, "ignored.log", "keep me")
 		}, wantErr: ErrWorktreeDirty},
 		{name: "claude context", prepare: func(t *testing.T, path string) {
-			writeRemovalFile(t, path, "CLAUDE.local.md", "generated")
+			if _, err := agent.New(agent.Claude, "").InjectContext(path, "generated"); err != nil {
+				t.Fatal(err)
+			}
 		}},
 		{name: "codex context", prepare: func(t *testing.T, path string) {
-			writeRemovalFile(t, path, "AGENTS.md", "generated")
-			writeRemovalFile(t, path, ".zen/.pr_context_injected", "")
+			if _, err := agent.New(agent.Codex, "").InjectContext(path, "generated"); err != nil {
+				t.Fatal(err)
+			}
 		}},
+		{name: "claude file without sentinel", prepare: func(t *testing.T, path string) {
+			writeRemovalFile(t, path, "CLAUDE.local.md", "user owned")
+		}, wantErr: ErrWorktreeDirty},
 		{name: "agents file without sentinel", prepare: func(t *testing.T, path string) {
 			writeRemovalFile(t, path, "AGENTS.md", "user owned")
 		}, wantErr: ErrWorktreeDirty},
@@ -84,12 +92,20 @@ func TestRemove(t *testing.T) {
 
 func TestRemoveGitFailurePreservesWorktree(t *testing.T) {
 	_, path := removalFixture(t)
+	if _, err := agent.New(agent.Claude, "").InjectContext(path, "generated"); err != nil {
+		t.Fatal(err)
+	}
 	err := remove(filepath.Join(t.TempDir(), "not-a-repository"), path, func(string) bool { return false })
 	if err == nil || RemovalBlocked(err) {
 		t.Fatalf("Remove() error = %v, want Git failure", err)
 	}
 	if _, err := os.Stat(path); err != nil {
 		t.Fatal("Git failure removed the worktree")
+	}
+	for _, name := range []string{"CLAUDE.local.md", ".zen/.claude_context_injected"} {
+		if _, err := os.Stat(filepath.Join(path, filepath.FromSlash(name))); err != nil {
+			t.Errorf("Git failure did not restore %s: %v", name, err)
+		}
 	}
 }
 

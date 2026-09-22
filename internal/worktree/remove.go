@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -46,7 +47,12 @@ func remove(originPath, worktreePath string, runningIn func(string) bool) error 
 		return ErrWorktreeActive
 	}
 
-	dirty, err := removalDirty(worktreePath)
+	owned := make(map[string]struct{})
+	for _, path := range agent.OwnedContextFiles(worktreePath) {
+		owned[filepath.ToSlash(path)] = struct{}{}
+	}
+
+	dirty, err := removalDirty(worktreePath, owned)
 	if err != nil {
 		return err
 	}
@@ -54,19 +60,25 @@ func remove(originPath, worktreePath string, runningIn func(string) bool) error 
 		return ErrWorktreeDirty
 	}
 
-	if err := removeOwnedContext(worktreePath); err != nil {
+	snapshots, err := removeOwnedContext(worktreePath, owned)
+	if err != nil {
 		return err
 	}
 
 	cmd := exec.Command("git", "worktree", "remove", worktreePath)
 	cmd.Dir = originPath
 	if out, err := cmd.CombinedOutput(); err != nil {
+		if _, statErr := os.Stat(worktreePath); !os.IsNotExist(statErr) {
+			if restoreErr := restoreOwnedContext(snapshots); restoreErr != nil {
+				return fmt.Errorf("git worktree remove: %w: %s; restore generated context: %v", err, strings.TrimSpace(string(out)), restoreErr)
+			}
+		}
 		return fmt.Errorf("git worktree remove: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 	return nil
 }
 
-func removalDirty(worktreePath string) (bool, error) {
+func removalDirty(worktreePath string, owned map[string]struct{}) (bool, error) {
 	dirty, err := TrackedDirty(worktreePath)
 	if err != nil || dirty {
 		return dirty, err
@@ -84,7 +96,10 @@ func removalDirty(worktreePath string) (bool, error) {
 		}
 		for _, raw := range bytes.Split(out, []byte{0}) {
 			path := string(raw)
-			if path != "" && !zenOwnedContext(worktreePath, filepath.ToSlash(path)) {
+			if path == "" {
+				continue
+			}
+			if _, ok := owned[filepath.ToSlash(path)]; !ok {
 				return true, nil
 			}
 		}
@@ -92,25 +107,59 @@ func removalDirty(worktreePath string) (bool, error) {
 	return false, nil
 }
 
-func removeOwnedContext(worktreePath string) error {
-	paths := []string{"CLAUDE.local.md", ".zen/PR_CONTEXT.md", ".zen/.pr_context_injected"}
-	if zenOwnedContext(worktreePath, "AGENTS.md") {
-		paths = append(paths, "AGENTS.md")
-	}
-	for _, path := range paths {
+type contextSnapshot struct {
+	path string
+	data []byte
+	mode fs.FileMode
+}
+
+func removeOwnedContext(worktreePath string, owned map[string]struct{}) ([]contextSnapshot, error) {
+	var snapshots []contextSnapshot
+	for path := range owned {
 		tracked, err := trackedPath(worktreePath, path)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if tracked {
 			continue
 		}
-		if err := os.Remove(filepath.Join(worktreePath, filepath.FromSlash(path))); err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("remove generated context %s: %w", path, err)
+		fullPath := filepath.Join(worktreePath, filepath.FromSlash(path))
+		info, err := os.Stat(fullPath)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("inspect generated context %s: %w", path, err)
+		}
+		data, err := os.ReadFile(fullPath)
+		if err != nil {
+			return nil, fmt.Errorf("read generated context %s: %w", path, err)
+		}
+		snapshots = append(snapshots, contextSnapshot{path: fullPath, data: data, mode: info.Mode()})
+	}
+	for i, snapshot := range snapshots {
+		if err := os.Remove(snapshot.path); err != nil {
+			removeErr := fmt.Errorf("remove generated context %s: %w", filepath.Base(snapshot.path), err)
+			if restoreErr := restoreOwnedContext(snapshots[:i]); restoreErr != nil {
+				return nil, fmt.Errorf("%w; restore generated context: %v", removeErr, restoreErr)
+			}
+			return nil, removeErr
 		}
 	}
 	// Remove the generated directory only when no user-owned files remain.
 	_ = os.Remove(filepath.Join(worktreePath, ".zen"))
+	return snapshots, nil
+}
+
+func restoreOwnedContext(snapshots []contextSnapshot) error {
+	for _, snapshot := range snapshots {
+		if err := os.MkdirAll(filepath.Dir(snapshot.path), 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(snapshot.path, snapshot.data, snapshot.mode.Perm()); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -125,16 +174,4 @@ func trackedPath(worktreePath, path string) (bool, error) {
 		return false, fmt.Errorf("inspect context path %s: %w", path, err)
 	}
 	return true, nil
-}
-
-func zenOwnedContext(worktreePath, path string) bool {
-	switch path {
-	case "CLAUDE.local.md", ".zen/PR_CONTEXT.md", ".zen/.pr_context_injected":
-		return true
-	case "AGENTS.md":
-		_, err := os.Stat(filepath.Join(worktreePath, ".zen", ".pr_context_injected"))
-		return err == nil
-	default:
-		return false
-	}
 }
