@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -196,10 +195,8 @@ func deleteWorktree(s staleWorktree) bool {
 		return false
 	}
 
-	removeCmd := exec.Command("git", "worktree", "remove", s.Path, "--force")
-	removeCmd.Dir = originPath
-	if err := removeCmd.Run(); err != nil {
-		fmt.Printf("    %s\n", ui.RedText("✗ Failed to remove"))
+	if err := worktree.Remove(originPath, s.Path); err != nil {
+		fmt.Printf("    %s\n", ui.RedText("✗ "+err.Error()))
 		return false
 	}
 
