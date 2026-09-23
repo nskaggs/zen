@@ -109,6 +109,10 @@ zen work delete <name>                         # delete worktree (cleans Claude 
 
 Feature branches are prefixed by `branch_prefix` from config — see [docs/configuration.md](docs/configuration.md).
 
+Every delete and cleanup path retains worktrees with local changes or a running
+agent. The delete commands' `--force` flag skips confirmation; it does not
+override those safety checks.
+
 ## Where am I?
 
 Different lenses on what you're doing across worktrees.

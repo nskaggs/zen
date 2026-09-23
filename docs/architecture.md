@@ -59,12 +59,12 @@ The daemon uses [driftlessaf](https://github.com/driftlessaf) workqueues with tw
     │  Step 1: ensureWorktree             │    │  Step 1: removeWorktree           │
     │  ┌─────────────────────────────┐    │    │  ┌─────────────────────────────┐  │
     │  │ missing: fetch pull/N/head │    │    │  │ if missing? skip            │  │
-    │  │   into pr-N, worktree add   │    │    │  │ git worktree remove --force │  │
-    │  │ exists: fetch into          │    │    │  └─────────────────────────────┘  │
-    │  │   origin/pr-N, ff-only      │    │    │         │                         │
-    │  │ skip: dirty or live agent    │    │    │         v on error: RETRY         │
-    │  │ rewritten: skip (CLI       │    │    └───────────────────────────────────┘
-    │  │   prompts before reset)     │    │
+    │  │   into pr-N, worktree add   │    │    │  │ dirty/untracked/active? skip│  │
+    │  │ exists: fetch into          │    │    │  │ git worktree remove         │  │
+    │  │   origin/pr-N, ff-only      │    │    │  └─────────────────────────────┘  │
+    │  │ skip: dirty or live agent    │    │    │         │ safety refusal: SKIP    │
+    │  │ rewritten: skip (CLI       │    │    │         v Git/fs error: RETRY     │
+    │  │   prompts before reset)     │    │    └───────────────────────────────────┘
     │  └─────────────────────────────┘    │
     │         │                           │
     │         v on error: RETRY           │

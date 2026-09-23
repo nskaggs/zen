@@ -3,8 +3,6 @@ package reconciler
 import (
 	"context"
 	"fmt"
-	"os"
-	"os/exec"
 	"path/filepath"
 
 	"chainguard.dev/driftlessaf/workqueue"
@@ -49,25 +47,16 @@ func (r *CleanupReconciler) Reconcile(ctx context.Context, key string, _ workque
 	worktreePath := filepath.Join(basePath, worktreeName)
 	originPath := filepath.Join(basePath, repo)
 
-	// Remove worktree (retryable on failure)
-	if err := removeWorktree(originPath, worktreePath); err != nil {
-		return fmt.Errorf("removeWorktree: %w", err)
+	// Safety refusals are expected skips; Git and filesystem failures retry.
+	if err := wt.Remove(originPath, worktreePath); err != nil {
+		if wt.RemovalBlocked(err) {
+			logf("Cleanup skipped for %s: %v", label, err)
+			return nil
+		}
+		return fmt.Errorf("remove worktree: %w", err)
 	}
 
 	logf("Cleanup complete for %s", label)
-	return nil
-}
-
-func removeWorktree(originPath, worktreePath string) error {
-	if _, err := os.Stat(worktreePath); os.IsNotExist(err) {
-		return nil // already removed
-	}
-
-	removeCmd := exec.Command("git", "worktree", "remove", worktreePath, "--force")
-	removeCmd.Dir = originPath
-	if out, err := removeCmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("git worktree remove: %w: %s", err, string(out))
-	}
 	return nil
 }
 
