@@ -30,9 +30,10 @@ func removalFixture(t *testing.T) (string, string) {
 
 func TestRemove(t *testing.T) {
 	tests := []struct {
-		name    string
-		prepare func(*testing.T, string)
-		wantErr error
+		name           string
+		prepare        func(*testing.T, string)
+		wantErr        error
+		preserveAgents bool
 	}{
 		{name: "clean"},
 		{name: "tracked change", prepare: func(t *testing.T, path string) {
@@ -66,7 +67,16 @@ func TestRemove(t *testing.T) {
 			if _, err := agent.New(agent.Codex, "").InjectContext(path, "generated"); err != nil {
 				t.Fatal(err)
 			}
-		}, wantErr: ErrWorktreeDirty},
+		}, wantErr: ErrWorktreeDirty, preserveAgents: true},
+		{name: "legacy codex sentinel preserves user agents and side context", prepare: func(t *testing.T, path string) {
+			writeRemovalFile(t, path, "AGENTS.md", "user owned")
+			writeRemovalFile(t, path, ".zen/PR_CONTEXT.md", "generated")
+			writeRemovalFile(t, path, ".zen/.pr_context_injected", "")
+		}, wantErr: ErrWorktreeDirty, preserveAgents: true},
+		{name: "legacy codex sentinel preserves user agents after side context deletion", prepare: func(t *testing.T, path string) {
+			writeRemovalFile(t, path, "AGENTS.md", "user owned")
+			writeRemovalFile(t, path, ".zen/.pr_context_injected", "")
+		}, wantErr: ErrWorktreeDirty, preserveAgents: true},
 		{name: "claude file without sentinel", prepare: func(t *testing.T, path string) {
 			writeRemovalFile(t, path, "CLAUDE.local.md", "user owned")
 		}, wantErr: ErrWorktreeDirty},
@@ -89,7 +99,7 @@ func TestRemove(t *testing.T) {
 			if test.wantErr != nil && statErr != nil {
 				t.Fatal("refused removal removed the worktree")
 			}
-			if test.name == "codex side context preserves user agents file" {
+			if test.preserveAgents {
 				data, err := os.ReadFile(filepath.Join(path, "AGENTS.md"))
 				if err != nil || string(data) != "user owned" {
 					t.Fatalf("user-owned AGENTS.md was not preserved: data=%q err=%v", data, err)

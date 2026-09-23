@@ -20,29 +20,27 @@ func OwnedContextFiles(worktreePath string) []string {
 		paths = append(paths, claudeContextFile, claudeContextSentinel)
 	}
 	if sentinel := filepath.Join(worktreePath, codexSentinel); pathExists(sentinel) {
-		owned := codexOwnedContextFile(worktreePath, sentinel)
-		paths = append(paths, owned, codexSentinel)
+		if owned := codexOwnedContextFile(sentinel); owned != "" {
+			paths = append(paths, owned)
+		}
+		paths = append(paths, codexSentinel)
 	}
 	return paths
 }
 
-func codexOwnedContextFile(worktreePath, sentinel string) string {
+func codexOwnedContextFile(sentinel string) string {
 	if data, err := os.ReadFile(sentinel); err == nil {
 		switch strings.TrimSpace(string(data)) {
-		case "AGENTS.md":
-			return "AGENTS.md"
+		case codexContextFile:
+			return codexContextFile
 		case codexSideContextFile:
 			return codexSideContextFile
 		}
 	}
 
-	// Sentinels created before they recorded ownership were empty. Those
-	// injections used the side file only when it existed, so retain that
-	// behavior without claiming both possible context files.
-	if pathExists(filepath.Join(worktreePath, codexSideContextFile)) {
-		return codexSideContextFile
-	}
-	return "AGENTS.md"
+	// Empty legacy sentinels did not record which context path Zen created.
+	// Claim neither possible file so cleanup preserves both conservatively.
+	return ""
 }
 
 func pathExists(path string) bool {

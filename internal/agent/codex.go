@@ -61,9 +61,10 @@ func (a *codexAgent) ResumeCommand(sessionID, model string) string {
 }
 
 // ContextFile is AGENTS.md, the project-context file Codex reads automatically.
-func (a *codexAgent) ContextFile() string { return "AGENTS.md" }
+func (a *codexAgent) ContextFile() string { return codexContextFile }
 
 const (
+	codexContextFile     = "AGENTS.md"
 	codexSideContextFile = ".zen/PR_CONTEXT.md"
 	// codexSentinel marks that zen has injected PR context, regardless of which
 	// file received it. It makes daemon idempotency reliable even when the repo
