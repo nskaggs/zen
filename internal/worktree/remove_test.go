@@ -61,6 +61,12 @@ func TestRemove(t *testing.T) {
 				t.Fatal(err)
 			}
 		}},
+		{name: "codex side context preserves user agents file", prepare: func(t *testing.T, path string) {
+			writeRemovalFile(t, path, "AGENTS.md", "user owned")
+			if _, err := agent.New(agent.Codex, "").InjectContext(path, "generated"); err != nil {
+				t.Fatal(err)
+			}
+		}, wantErr: ErrWorktreeDirty},
 		{name: "claude file without sentinel", prepare: func(t *testing.T, path string) {
 			writeRemovalFile(t, path, "CLAUDE.local.md", "user owned")
 		}, wantErr: ErrWorktreeDirty},
@@ -82,6 +88,12 @@ func TestRemove(t *testing.T) {
 			_, statErr := os.Stat(path)
 			if test.wantErr != nil && statErr != nil {
 				t.Fatal("refused removal removed the worktree")
+			}
+			if test.name == "codex side context preserves user agents file" {
+				data, err := os.ReadFile(filepath.Join(path, "AGENTS.md"))
+				if err != nil || string(data) != "user owned" {
+					t.Fatalf("user-owned AGENTS.md was not preserved: data=%q err=%v", data, err)
+				}
 			}
 			if test.wantErr == nil && !os.IsNotExist(statErr) {
 				t.Fatal("successful removal left the worktree")

@@ -3,6 +3,7 @@ package agent
 import (
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 const (
@@ -18,10 +19,30 @@ func OwnedContextFiles(worktreePath string) []string {
 	if pathExists(filepath.Join(worktreePath, claudeContextSentinel)) {
 		paths = append(paths, claudeContextFile, claudeContextSentinel)
 	}
-	if pathExists(filepath.Join(worktreePath, codexSentinel)) {
-		paths = append(paths, "AGENTS.md", codexSideContextFile, codexSentinel)
+	if sentinel := filepath.Join(worktreePath, codexSentinel); pathExists(sentinel) {
+		owned := codexOwnedContextFile(worktreePath, sentinel)
+		paths = append(paths, owned, codexSentinel)
 	}
 	return paths
+}
+
+func codexOwnedContextFile(worktreePath, sentinel string) string {
+	if data, err := os.ReadFile(sentinel); err == nil {
+		switch strings.TrimSpace(string(data)) {
+		case "AGENTS.md":
+			return "AGENTS.md"
+		case codexSideContextFile:
+			return codexSideContextFile
+		}
+	}
+
+	// Sentinels created before they recorded ownership were empty. Those
+	// injections used the side file only when it existed, so retain that
+	// behavior without claiming both possible context files.
+	if pathExists(filepath.Join(worktreePath, codexSideContextFile)) {
+		return codexSideContextFile
+	}
+	return "AGENTS.md"
 }
 
 func pathExists(path string) bool {
