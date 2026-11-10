@@ -183,18 +183,11 @@ func (c *Client) GetReviewStatus(ctx context.Context, fullRepo string, prNumber 
 // ("MERGED", "CLOSED", "OPEN") and PR number of the first match.
 // Returns ("", 0, nil) if no PR found for that branch.
 func (c *Client) GetPRStateByBranch(ctx context.Context, fullRepo, branch string) (string, int, error) {
-	owner, repo := splitRepo(fullRepo)
-	prs, _, err := c.gh.PullRequests.List(ctx, owner, repo, &gh.PullRequestListOptions{
-		Head:  owner + ":" + branch,
-		State: "all",
-	})
-	if err != nil {
-		return "", 0, fmt.Errorf("listing PRs for branch %s: %w", branch, err)
+	owner, _ := splitRepo(fullRepo)
+	pr, err := c.newestPRByHead(ctx, fullRepo, owner, branch)
+	if err != nil || pr == nil {
+		return "", 0, err
 	}
-	if len(prs) == 0 {
-		return "", 0, nil
-	}
-	pr := prs[0]
 	if pr.GetMerged() {
 		return "MERGED", pr.GetNumber(), nil
 	}
@@ -206,18 +199,28 @@ func (c *Client) GetPRStateByBranch(ctx context.Context, fullRepo, branch string
 // owner of the repository the branch was pushed to, which for fork-based work
 // differs from fullRepo's owner.
 func (c *Client) FindPRByHead(ctx context.Context, fullRepo, headOwner, branch string) (int, error) {
+	pr, err := c.newestPRByHead(ctx, fullRepo, headOwner, branch)
+	if err != nil || pr == nil {
+		return 0, err
+	}
+	return pr.GetNumber(), nil
+}
+
+// newestPRByHead returns the first PR GitHub lists for head headOwner:branch
+// in any state, or nil when there is none.
+func (c *Client) newestPRByHead(ctx context.Context, fullRepo, headOwner, branch string) (*gh.PullRequest, error) {
 	owner, repo := splitRepo(fullRepo)
 	prs, _, err := c.gh.PullRequests.List(ctx, owner, repo, &gh.PullRequestListOptions{
 		Head:  headOwner + ":" + branch,
 		State: "all",
 	})
 	if err != nil {
-		return 0, fmt.Errorf("listing PRs for %s:%s: %w", headOwner, branch, err)
+		return nil, fmt.Errorf("listing PRs for %s:%s: %w", headOwner, branch, err)
 	}
 	if len(prs) == 0 {
-		return 0, nil
+		return nil, nil
 	}
-	return prs[0].GetNumber(), nil
+	return prs[0], nil
 }
 
 // IsRequestedReviewer checks if the given user login is a requested reviewer on a PR.

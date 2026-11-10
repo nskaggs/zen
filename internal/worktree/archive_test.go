@@ -288,13 +288,13 @@ func TestAppendManifestIsIdempotent(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "2026-11-10.tsv")
 	row := []string{"repo-feature", "/w/repo-feature", "feature", "abc", "refs/archive/2026-11-10/repo-feature", ""}
 	for range 2 {
-		if err := appendManifest(path, row); err != nil {
+		if _, err := appendManifest(path, row); err != nil {
 			t.Fatal(err)
 		}
 	}
 	other := append([]string(nil), row...)
 	other[3] = "def"
-	if err := appendManifest(path, other); err != nil {
+	if _, err := appendManifest(path, other); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(path)
@@ -303,5 +303,104 @@ func TestAppendManifestIsIdempotent(t *testing.T) {
 	}
 	if lines := strings.Split(strings.TrimSuffix(string(data), "\n"), "\n"); len(lines) != 3 {
 		t.Fatalf("manifest = %q, want a header, the row once, and the other head", data)
+	}
+}
+
+func TestArchiveKeepsStagedContentTheWorkingTreeReverted(t *testing.T) {
+	origin, path := removalFixture(t)
+	writeRemovalFile(t, path, "tracked", "staged only")
+	runRemovalGit(t, path, "add", "tracked")
+	writeRemovalFile(t, path, "tracked", "base")
+	got, err := archive(origin, path, notRunning, nil, archiveDay, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.WIP {
+		t.Fatal("staged-only content made no WIP commit")
+	}
+	found := false
+	for _, sha := range strings.Fields(gitIn(t, origin, "rev-list", got.Ref)) {
+		if gitIn(t, origin, "show", sha+":tracked") == "staged only" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("no commit reachable from %s holds the staged content", got.Ref)
+	}
+	if content := gitIn(t, origin, "show", got.Ref+":tracked"); content != "base" {
+		t.Fatalf("archived tip tracked = %q, want the working tree's base", content)
+	}
+}
+
+// archiveIgnoredTwice archives a worktree with ignored file run.log holding
+// first, recreates the worktree at the same path and HEAD, writes second, and
+// archives again the same day.
+func archiveIgnoredTwice(t *testing.T, first, second string) (dir string, a, b *Archived) {
+	t.Helper()
+	origin, path := removalFixture(t)
+	writeRemovalFile(t, path, ".gitignore", "*.log\n")
+	runRemovalGit(t, path, "add", ".gitignore")
+	runRemovalGit(t, path, "commit", "-m", "ignore logs")
+	writeRemovalFile(t, path, "run.log", first)
+	dir = t.TempDir()
+	a, err := archive(origin, path, notRunning, nil, archiveDay, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runRemovalGit(t, origin, "worktree", "add", path, "feature")
+	writeRemovalFile(t, path, "run.log", second)
+	b, err = archive(origin, path, notRunning, nil, archiveDay, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dir, a, b
+}
+
+func TestArchiveAgainNeverOverwritesBackup(t *testing.T) {
+	dir, a, b := archiveIgnoredTwice(t, "first", "second")
+	if a.IgnoredBackup == b.IgnoredBackup {
+		t.Fatalf("both archives used backup %s", a.IgnoredBackup)
+	}
+	for backup, want := range map[string]string{a.IgnoredBackup: "first", b.IgnoredBackup: "second"} {
+		if data, err := os.ReadFile(filepath.Join(backup, "run.log")); err != nil || string(data) != want {
+			t.Errorf("%s/run.log = %q, %v; want %q", backup, data, err, want)
+		}
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "2026-11-10.tsv"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lines := strings.Split(strings.TrimSuffix(string(data), "\n"), "\n"); len(lines) != 3 {
+		t.Fatalf("manifest = %q, want a row for each backup", data)
+	}
+}
+
+func TestArchiveRetryReusesIdenticalBackup(t *testing.T) {
+	dir, a, b := archiveIgnoredTwice(t, "same", "same")
+	if a.IgnoredBackup != b.IgnoredBackup {
+		t.Fatalf("retry recorded %s, want the first backup %s", b.IgnoredBackup, a.IgnoredBackup)
+	}
+	if _, err := os.Stat(a.IgnoredBackup + ".2"); !os.IsNotExist(err) {
+		t.Fatal("identical retry left a duplicate backup dir")
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "2026-11-10.tsv"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lines := strings.Split(strings.TrimSuffix(string(data), "\n"), "\n"); len(lines) != 2 {
+		t.Fatalf("manifest = %q, want one row", data)
+	}
+}
+
+func TestArchiveBranchRefusesChangedBranch(t *testing.T) {
+	t.Setenv("ZEN_HOME", t.TempDir())
+	origin, path := removalFixture(t)
+	runRemovalGit(t, path, "checkout", "-b", "other")
+	_, err := ArchiveBranch(origin, path, "feature")
+	if !errors.Is(err, ErrBranchChanged) || !RemovalBlocked(err) {
+		t.Fatalf("ArchiveBranch() error = %v, want %v", err, ErrBranchChanged)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatal("refusal removed the worktree")
 	}
 }

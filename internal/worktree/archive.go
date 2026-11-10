@@ -24,6 +24,10 @@ const ArchiveCommitMessage = "wip: archive uncommitted work before worktree remo
 // points at a different commit, so archiving again would move it.
 var ErrArchiveRefExists = errors.New("refusing to move an existing archive ref")
 
+// ErrBranchChanged means the worktree no longer has the branch checked out
+// that the caller verified, so archiving it now would act on other work.
+var ErrBranchChanged = errors.New("refusing to archive worktree whose branch changed")
+
 // manifestHeader is the first line of each day's archive manifest.
 const manifestHeader = "worktree\tpath\tbranch\thead\tarchive_ref\tignored_backup\n"
 
@@ -60,6 +64,27 @@ func Archive(originPath, worktreePath string) (*Archived, error) {
 // (ErrNotPRReview). Commits beyond the PR head are kept by the archive ref.
 func ArchiveReview(originPath, worktreePath string, prNumber int) (*Archived, error) {
 	return archiveReview(originPath, worktreePath, prNumber, agent.RunningIn, time.Now(), archiveDir())
+}
+
+// ArchiveBranch archives a work stream only while it still has branch checked
+// out, checked under the same lock as the archive (ErrBranchChanged).
+func ArchiveBranch(originPath, worktreePath, branch string) (*Archived, error) {
+	return archive(originPath, worktreePath, agent.RunningIn, func() error {
+		current, detached, err := checkedOutBranch(worktreePath)
+		if err != nil {
+			return err
+		}
+		if detached || current != branch {
+			return fmt.Errorf("%w: now %q, verified %q", ErrBranchChanged, current, branch)
+		}
+		return nil
+	}, time.Now(), archiveDir())
+}
+
+// CurrentBranch returns the branch checked out in worktreePath, or
+// detached=true when HEAD is detached.
+func CurrentBranch(worktreePath string) (branch string, detached bool, err error) {
+	return checkedOutBranch(worktreePath)
 }
 
 func archiveReview(originPath, worktreePath string, prNumber int, runningIn func(string) bool, now time.Time, dir string) (*Archived, error) {
@@ -125,12 +150,12 @@ func archive(originPath, worktreePath string, runningIn func(string) bool, verif
 	if err := pinRef(worktreePath, ref, head); err != nil {
 		return nil, err
 	}
-	backup, err := copyIgnored(worktreePath, filepath.Join(dir, day, name), owned)
+	backup, err := copyIgnored(worktreePath, freeDir(filepath.Join(dir, day, name)), owned)
 	if err != nil {
 		return nil, err
 	}
 	manifest := filepath.Join(dir, day+".tsv")
-	if err := appendManifest(manifest, []string{name, worktreePath, branch, head, ref, backup}); err != nil {
+	if backup, err = appendManifest(manifest, []string{name, worktreePath, branch, head, ref, backup}); err != nil {
 		return nil, err
 	}
 
@@ -151,12 +176,28 @@ func archive(originPath, worktreePath string, runningIn func(string) bool, verif
 	return &Archived{Name: name, Path: worktreePath, Branch: branch, Head: head, Ref: ref, WIP: wip, Manifest: manifest, IgnoredBackup: backup}, nil
 }
 
-// commitWIP stages every change except Zen-generated context and commits it
-// when anything is staged. It reports whether it made a commit.
+// commitWIP commits the worktree's uncommitted work, leaving out
+// Zen-generated context, and reports whether it made a commit. Content that
+// is staged but differs from the working tree is committed first, so `git add
+// -A` cannot replace it before it is kept.
 func commitWIP(worktreePath string, owned map[string]struct{}) (bool, error) {
+	staged, err := commitIndex(worktreePath, owned)
+	if err != nil {
+		return false, err
+	}
 	if out, err := gitOutput(worktreePath, "add", "-A"); err != nil {
 		return false, fmt.Errorf("git add: %w: %s", err, out)
 	}
+	working, err := commitIndex(worktreePath, owned)
+	if err != nil {
+		return false, err
+	}
+	return staged || working, nil
+}
+
+// commitIndex unstages Zen-generated context, then commits the index when it
+// differs from HEAD. It reports whether it made a commit.
+func commitIndex(worktreePath string, owned map[string]struct{}) (bool, error) {
 	if len(owned) > 0 {
 		args := []string{"reset", "-q", "--"}
 		for path := range owned {
@@ -227,6 +268,19 @@ func copyIgnored(worktreePath, dest string, owned map[string]struct{}) (string, 
 	return dest, nil
 }
 
+// freeDir returns dir when nothing exists there yet, otherwise the first of
+// dir.2, dir.3, ... that does not exist, so an earlier backup is never
+// overwritten.
+func freeDir(dir string) string {
+	candidate := dir
+	for n := 2; ; n++ {
+		if _, err := os.Lstat(candidate); os.IsNotExist(err) {
+			return candidate
+		}
+		candidate = fmt.Sprintf("%s.%d", dir, n)
+	}
+}
+
 // copyEntry copies one file or symlink from src to dst, replacing dst.
 func copyEntry(src, dst string) error {
 	info, err := os.Lstat(src)
@@ -265,25 +319,40 @@ func copyEntry(src, dst string) error {
 	return outFile.Close()
 }
 
-// appendManifest appends row unless a row for the same worktree, path, head,
-// and archive ref is already there, so a retried archive writes it once.
-func appendManifest(path string, row []string) error {
+// appendManifest appends row and returns its ignored-file backup dir. When a
+// row for the same worktree, path, head, and archive ref already records a
+// backup with identical content, as after a retried archive, it removes the
+// new copy, writes nothing, and returns the recorded dir instead.
+func appendManifest(path string, row []string) (string, error) {
+	backup := row[5]
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return fmt.Errorf("create archive manifest dir: %w", err)
+		return "", fmt.Errorf("create archive manifest dir: %w", err)
 	}
 	existing, err := os.ReadFile(path)
 	if err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("read archive manifest: %w", err)
+		return "", fmt.Errorf("read archive manifest: %w", err)
 	}
 	for _, line := range strings.Split(string(existing), "\n") {
 		f := strings.Split(line, "\t")
-		if len(f) >= 5 && f[0] == row[0] && f[1] == row[1] && f[3] == row[3] && f[4] == row[4] {
-			return nil
+		if len(f) < 6 || f[0] != row[0] || f[1] != row[1] || f[3] != row[3] || f[4] != row[4] {
+			continue
+		}
+		same, err := sameTree(f[5], backup)
+		if err != nil {
+			return "", err
+		}
+		if same {
+			if backup != "" && backup != f[5] {
+				if err := os.RemoveAll(backup); err != nil {
+					return "", fmt.Errorf("remove duplicate backup: %w", err)
+				}
+			}
+			return f[5], nil
 		}
 	}
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
-		return fmt.Errorf("open archive manifest: %w", err)
+		return "", fmt.Errorf("open archive manifest: %w", err)
 	}
 	defer f.Close()
 	line := strings.Join(row, "\t") + "\n"
@@ -291,9 +360,92 @@ func appendManifest(path string, row []string) error {
 		line = manifestHeader + line
 	}
 	if _, err := f.WriteString(line); err != nil {
-		return fmt.Errorf("write archive manifest: %w", err)
+		return "", fmt.Errorf("write archive manifest: %w", err)
 	}
-	return nil
+	return backup, nil
+}
+
+// sameTree reports whether directories a and b hold the same files, symlinks,
+// modes, and contents. Two empty names (no backup) are the same; a missing
+// directory is not the same as any other.
+func sameTree(a, b string) (bool, error) {
+	if a == "" || b == "" {
+		return a == b, nil
+	}
+	count := 0
+	err := filepath.WalkDir(a, func(p string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, _ := filepath.Rel(a, p)
+		if d.IsDir() {
+			return nil
+		}
+		count++
+		same, err := sameEntry(p, filepath.Join(b, rel))
+		if err != nil || !same {
+			if err == nil {
+				err = errDiffer
+			}
+			return err
+		}
+		return nil
+	})
+	if errors.Is(err, errDiffer) || os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("compare backups: %w", err)
+	}
+	other := 0
+	if err := filepath.WalkDir(b, func(_ string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.IsDir() {
+			other++
+		}
+		return nil
+	}); err != nil {
+		return false, fmt.Errorf("compare backups: %w", err)
+	}
+	return count == other, nil
+}
+
+var errDiffer = errors.New("backups differ")
+
+func sameEntry(a, b string) (bool, error) {
+	ai, err := os.Lstat(a)
+	if err != nil {
+		return false, err
+	}
+	bi, err := os.Lstat(b)
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if ai.Mode() != bi.Mode() || (ai.Mode().IsRegular() && ai.Size() != bi.Size()) {
+		return false, nil
+	}
+	if ai.Mode()&os.ModeSymlink != 0 {
+		at, err := os.Readlink(a)
+		if err != nil {
+			return false, err
+		}
+		bt, err := os.Readlink(b)
+		return err == nil && at == bt, err
+	}
+	ad, err := os.ReadFile(a)
+	if err != nil {
+		return false, err
+	}
+	bd, err := os.ReadFile(b)
+	if err != nil {
+		return false, err
+	}
+	return bytes.Equal(ad, bd), nil
 }
 
 func gitOutput(dir string, args ...string) (string, error) {

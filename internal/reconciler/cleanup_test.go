@@ -273,6 +273,7 @@ func TestCleanupReconcile_Feature(t *testing.T) {
 			worktreePath := filepath.Join(basePath, "mono-feat")
 			initCleanupRepo(t, basePath, originPath)
 			runCleanupGit(t, originPath, "worktree", "add", "-b", "nskaggs/feat", worktreePath)
+			runCleanupGit(t, originPath, "remote", "add", "nskaggs", "git@github.com:nskaggs/mono.git")
 			if err := os.WriteFile(filepath.Join(worktreePath, "follow-up.txt"), []byte("wip"), 0o644); err != nil {
 				t.Fatal(err)
 			}
@@ -282,6 +283,7 @@ func TestCleanupReconcile_Feature(t *testing.T) {
 
 			rec := NewCleanupReconciler(cfg)
 			rec.prMergeInfo = mergedInfo("", tt.ago)
+			rec.prByHead = featPR
 			verifyCalls := 0
 			rec.deployVerified = func(_ context.Context, fullRepo string, prNumber int) (bool, string, error) {
 				verifyCalls++
@@ -324,6 +326,42 @@ func TestParseFeatureKeyRejectsReviewKeys(t *testing.T) {
 	repo, n, name, err := ParseFeatureKey(MakeFeatureKey("mono", 42, "mono-feat"))
 	if err != nil || repo != "mono" || n != 42 || name != "mono-feat" {
 		t.Fatalf("ParseFeatureKey() = %q %d %q %v", repo, n, name, err)
+	}
+}
+
+// featPR reports PR 5 as the head of nskaggs:nskaggs/feat and nothing else.
+func featPR(_ context.Context, _, owner, branch string) (int, error) {
+	if owner == "nskaggs" && branch == "nskaggs/feat" {
+		return 5, nil
+	}
+	return 0, nil
+}
+
+func TestCleanupReconcile_FeatureSkipsWhenBranchChangedAfterScan(t *testing.T) {
+	t.Setenv("ZEN_HOME", t.TempDir())
+	basePath := t.TempDir()
+	originPath := filepath.Join(basePath, "mono")
+	worktreePath := filepath.Join(basePath, "mono-feat")
+	initCleanupRepo(t, basePath, originPath)
+	runCleanupGit(t, originPath, "worktree", "add", "-b", "nskaggs/feat", worktreePath)
+	runCleanupGit(t, originPath, "remote", "add", "nskaggs", "git@github.com:nskaggs/mono.git")
+	// The scan queued PR 5 for nskaggs/feat; then the worktree moved to new work.
+	runCleanupGit(t, worktreePath, "checkout", "-b", "nskaggs/next")
+	cfg := &config.Config{Repos: map[string]config.RepoConfig{
+		"mono": {FullName: "example/mono", BasePath: basePath},
+	}}
+	rec := NewCleanupReconciler(cfg)
+	rec.prMergeInfo = mergedInfo("", 2*time.Hour)
+	rec.prByHead = featPR
+	rec.deployVerified = func(context.Context, string, int) (bool, string, error) {
+		t.Fatal("deploy checked for a worktree that left the PR's branch")
+		return false, "", nil
+	}
+	if err := rec.Reconcile(context.Background(), MakeFeatureKey("mono", 5, "mono-feat"), workqueue.Options{}); err != nil {
+		t.Fatalf("Reconcile() error: %v", err)
+	}
+	if _, err := os.Stat(worktreePath); err != nil {
+		t.Fatal("worktree on a different branch was archived")
 	}
 }
 
@@ -387,11 +425,13 @@ func TestCleanupReconcile_FeatureLandWatchStages(t *testing.T) {
 			worktreePath := filepath.Join(basePath, "mono-feat")
 			initCleanupRepo(t, basePath, originPath)
 			runCleanupGit(t, originPath, "worktree", "add", "-b", "nskaggs/feat", worktreePath)
+			runCleanupGit(t, originPath, "remote", "add", "nskaggs", "git@github.com:nskaggs/mono.git")
 			cfg := &config.Config{Repos: map[string]config.RepoConfig{
 				"mono": {FullName: "example/mono", BasePath: basePath},
 			}}
 			rec := NewCleanupReconciler(cfg)
 			rec.prMergeInfo = mergedInfo("", 2*time.Hour)
+			rec.prByHead = featPR
 			if err := rec.Reconcile(context.Background(), MakeFeatureKey("mono", 5, "mono-feat"), workqueue.Options{}); err != nil {
 				t.Fatalf("Reconcile() error: %v", err)
 			}

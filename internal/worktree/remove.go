@@ -29,7 +29,8 @@ func RemovalBlocked(err error) bool {
 	return errors.Is(err, ErrWorktreeDirty) ||
 		errors.Is(err, ErrWorktreeActive) ||
 		errors.Is(err, ErrNotPRReview) ||
-		errors.Is(err, ErrArchiveRefExists)
+		errors.Is(err, ErrArchiveRefExists) ||
+		errors.Is(err, ErrBranchChanged)
 }
 
 // Remove removes a linked worktree only when it is inactive and contains no
