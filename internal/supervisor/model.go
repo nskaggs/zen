@@ -122,11 +122,19 @@ var infraConclusions = map[string]bool{
 	"STALE":           true,
 }
 
+// humanGated reports whether a failing check waits on a human attestation,
+// such as a label confirming public code holds nothing proprietary. Only
+// Nicholas can satisfy it, so it never wakes an agent.
+func humanGated(label string) bool {
+	return strings.Contains(strings.ToLower(label), "attestation")
+}
+
 // Issues are the problems on an open PR that need work.
 type Issues struct {
 	Conflict         bool
 	Failing          []string // change-caused failing checks
 	Infra            []string // infrastructure-failed checks
+	Attest           []string // failing checks that wait on Nicholas's attestation
 	ChangesRequested bool
 	Threads          []ghpkg.ThreadComment // unresolved threads waiting on the author
 	Pending          bool
@@ -169,6 +177,8 @@ func FindIssues(o Observed) Issues {
 			is.Pending = true
 		case c.Name != "" && infraConclusions[c.Conclusion]:
 			is.Infra = append(is.Infra, c.Label())
+		case (c.Conclusion == "FAILURE" || c.Conclusion == "ACTION_REQUIRED" || c.State == "FAILURE" || c.State == "ERROR") && humanGated(c.Label()):
+			is.Attest = append(is.Attest, c.Label())
 		case c.Conclusion == "FAILURE" || c.Conclusion == "ACTION_REQUIRED" || c.State == "FAILURE" || c.State == "ERROR":
 			is.Failing = append(is.Failing, c.Label())
 		case c.State == "PENDING" || c.State == "EXPECTED":
@@ -183,6 +193,7 @@ func FindIssues(o Observed) Issues {
 	}
 	sort.Strings(is.Failing)
 	sort.Strings(is.Infra)
+	sort.Strings(is.Attest)
 	for _, t := range pr.ReviewThreads.Nodes {
 		if t.IsResolved || t.IsOutdated || len(t.Comments.Nodes) == 0 {
 			continue
@@ -292,6 +303,8 @@ func Derive(o Observed, now time.Time) (Item, []Action) {
 	case is.Judgment():
 		set(OwnerAgent, "queued: "+is.Describe())
 		actions = append(actions, Action{Kind: ActionWake, Key: key})
+	case len(is.Attest) > 0:
+		set(OwnerYou, "needs your attestation: "+strings.Join(is.Attest, ","))
 	case len(is.Infra) > 0 && o.Memory.RerunHead == pr.HeadRefOid:
 		set(OwnerYou, "infra failure after rerun: "+strings.Join(is.Infra, ","))
 	case len(is.Infra) > 0 && enrolled:

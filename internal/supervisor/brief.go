@@ -53,7 +53,7 @@ func BuildBrief(in BriefInput) string {
 	b.WriteString(`
 Do: fix it in this worktree, run the relevant local tests, commit, and make an ordinary push to the PR branch.
 After the push, resolve only the review threads that push addresses; do not reply to them.
-Never force push, merge, enable auto-merge, comment or reply as Nicholas, or trigger a release, deploy, or apply.
+Never force push, merge, enable auto-merge, add or remove labels, attest for Nicholas, comment or reply as Nicholas, or trigger a release, deploy, or apply.
 If the fix is ambiguous, needs a decision, or is outside the PR's scope, change nothing and say why.
 End with exactly one final line: "FIXED <what you changed>" or "STUCK <why>".
 `)

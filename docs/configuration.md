@@ -191,6 +191,7 @@ It takes deterministic steps itself and wakes an agent only for a change that ne
 |---|---|
 | Behind its base, otherwise ready | `gh pr update-branch`, once per head |
 | A check `TIMED_OUT`, `CANCELLED`, `STARTUP_FAILURE`, or `STALE` | `gh run rerun --failed`, once per head; a repeat goes to you |
+| A failing check named like `*Attestation*` | Goes to you; only you can attest, so no agent is woken |
 | A change-caused check failure or a merge conflict | Wake an agent, once per head |
 | Changes requested or an unresolved review thread (not your own reply) | Wake an agent, once per set of comments |
 | Land-approved | `land-watch --arm` arms auto-merge once approvals exist |

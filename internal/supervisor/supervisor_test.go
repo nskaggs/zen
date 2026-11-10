@@ -99,6 +99,7 @@ func TestDerive(t *testing.T) {
 		{"own reply waits on reviewer", Observed{PR: selfReply, Worktree: "/w", Self: "me"}, OwnerReviewer, "awaiting review", nil},
 		{"infra failure reruns", Observed{PR: openPR(1), Worktree: "/w", Checks: []ghpkg.PRCheck{{Name: "build", Status: "COMPLETED", Conclusion: "TIMED_OUT", DetailsURL: "https://github.com/o/r/actions/runs/42/job/1"}}}, OwnerAgent, "rerunning: build", []ActionKind{ActionRerun}},
 		{"infra after rerun", Observed{PR: openPR(1), Worktree: "/w", Memory: PRMemory{RerunHead: "aaaaaaaaaa"}, Checks: []ghpkg.PRCheck{{Name: "build", Status: "COMPLETED", Conclusion: "CANCELLED"}}}, OwnerYou, "after rerun", nil},
+		{"attestation waits on you", Observed{PR: openPR(1), Worktree: "/w", Checks: []ghpkg.PRCheck{failing("Open Source Attestation")}}, OwnerYou, "needs your attestation: Open Source Attestation", nil},
 		{"pending", Observed{PR: withRollup(openPR(1), "PENDING"), Worktree: "/w"}, OwnerReviewer, "CI running", nil},
 		{"wake running", Observed{PR: openPR(1), Worktree: "/w", Wake: &WakeRun{Summary: "CI: test", Started: now.Add(-4 * time.Minute)}}, OwnerAgent, "fixing CI: test · 4m", nil},
 	}
