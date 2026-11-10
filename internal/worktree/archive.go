@@ -150,7 +150,11 @@ func archive(originPath, worktreePath string, runningIn func(string) bool, verif
 	if err := pinRef(worktreePath, ref, head); err != nil {
 		return nil, err
 	}
-	backup, err := copyIgnored(worktreePath, freeDir(filepath.Join(dir, day, name)), owned)
+	dest, err := freeDir(filepath.Join(dir, day, name))
+	if err != nil {
+		return nil, err
+	}
+	backup, err := copyIgnored(worktreePath, dest, owned)
 	if err != nil {
 		return nil, err
 	}
@@ -270,12 +274,16 @@ func copyIgnored(worktreePath, dest string, owned map[string]struct{}) (string, 
 
 // freeDir returns dir when nothing exists there yet, otherwise the first of
 // dir.2, dir.3, ... that does not exist, so an earlier backup is never
-// overwritten.
-func freeDir(dir string) string {
+// overwritten. Any error other than "does not exist" is returned.
+func freeDir(dir string) (string, error) {
 	candidate := dir
 	for n := 2; ; n++ {
-		if _, err := os.Lstat(candidate); os.IsNotExist(err) {
-			return candidate
+		_, err := os.Lstat(candidate)
+		if os.IsNotExist(err) {
+			return candidate, nil
+		}
+		if err != nil {
+			return "", fmt.Errorf("choose backup dir: %w", err)
 		}
 		candidate = fmt.Sprintf("%s.%d", dir, n)
 	}

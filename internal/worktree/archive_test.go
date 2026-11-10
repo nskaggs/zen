@@ -404,3 +404,33 @@ func TestArchiveBranchRefusesChangedBranch(t *testing.T) {
 		t.Fatal("refusal removed the worktree")
 	}
 }
+
+func TestArchiveFailsWhenBackupDirCannotBeInspected(t *testing.T) {
+	origin, path := removalFixture(t)
+	writeRemovalFile(t, path, ".gitignore", "*.log\n")
+	runRemovalGit(t, path, "add", ".gitignore")
+	runRemovalGit(t, path, "commit", "-m", "ignore logs")
+	writeRemovalFile(t, path, "run.log", "keep me")
+	// A regular file where the archive dir should be makes every candidate
+	// fail with ENOTDIR.
+	dir := filepath.Join(t.TempDir(), "archive")
+	if err := os.WriteFile(dir, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := archive(origin, path, notRunning, nil, archiveDay, dir)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil || RemovalBlocked(err) {
+			t.Fatalf("archive() error = %v, want a filesystem error", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("archive did not return")
+	}
+	if _, err := os.Stat(filepath.Join(path, "run.log")); err != nil {
+		t.Fatal("failed archive removed the worktree")
+	}
+}
