@@ -109,11 +109,13 @@ zen work delete <name>                         # delete worktree (cleans Claude 
 
 Feature branches are prefixed by `branch_prefix` from config — see [docs/configuration.md](docs/configuration.md).
 
-Every delete and cleanup path retains worktrees with local changes or a running
-agent. The delete commands' `--force` flag skips confirmation; it does not
-override those safety checks. The daemon's merged cleanup archives instead of
-deleting: `zen archive` commits uncommitted work and pins `HEAD` under
-`refs/archive/`, so nothing in the worktree is lost.
+Every delete path (`zen work delete`, `zen review delete`, `zen cleanup
+--delete`) retains worktrees with local changes or a running agent. The delete
+commands' `--force` flag skips confirmation; it does not override those safety
+checks. The daemon's merged cleanup and `zen archive` keep everything instead:
+they commit uncommitted work, pin `HEAD` under `refs/archive/`, and copy
+ignored files to `~/.zen/state/archive/`. They still skip a worktree with a
+running agent.
 
 ## Where am I?
 

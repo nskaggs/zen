@@ -84,13 +84,14 @@ Every `cleanup_interval`, the daemon archives the worktrees of merged PRs. The d
 - **PR reviews** (worktrees named `<repo>-pr-<N>`, checked out on the `pr-<N>` branch zen created or on a detached HEAD) are archived once their PR merged at least `cleanup_after_merge` ago.
 - **Work streams** are archived once their branch's PR merged at least `cleanup_after_merge` ago and its deploy is verified. Zen finds the PR by looking up the branch as a PR head under each GitHub owner in the worktree's remotes, so a branch pushed to a fork counts. Deploy verification runs `land-watch` (without `--arm`, so it only reads) for that PR. It passes on `landed=yes` (every deploy stage land-watch found for the merge commit succeeded), or when every stage line is `status=none` (no push run matched land-watch's deploy pattern, as for a docs-only change). A pending, waiting, or failed stage never passes. Without `land-watch` on `PATH`, work streams stay until you run `zen archive`.
 
-Archiving is what `zen archive <name>` does: commit any uncommitted work (tracked changes and untracked files, honoring `.gitignore`, never zen's generated context) as `wip: archive uncommitted work before worktree removal`, pin `HEAD` at `refs/archive/<YYYY-MM-DD>/<worktree name>`, copy every git-ignored file (except zen's generated context) to `~/.zen/state/archive/<YYYY-MM-DD>/<worktree name>/`, append a row to `~/.zen/state/archive/<YYYY-MM-DD>.tsv` (worktree, path, branch, head, archive ref, ignored-file backup dir; a retry does not repeat a row), then `git worktree remove`. Branches are never deleted. Restore with `git worktree add <path> refs/archive/<YYYY-MM-DD>/<name>`.
+Archiving is what `zen archive <name>` does: commit any uncommitted work (staged content first, then tracked changes and untracked files, honoring `.gitignore`, never zen's generated context) as `wip: archive uncommitted work before worktree removal`, pin `HEAD` at `refs/archive/<YYYY-MM-DD>/<worktree name>`, copy every git-ignored file (except zen's generated context) to `~/.zen/state/archive/<YYYY-MM-DD>/<worktree name>/`, append a row to `~/.zen/state/archive/<YYYY-MM-DD>.tsv` (worktree, path, branch, head, archive ref, ignored-file backup dir; a retry with identical ignored files reuses the recorded backup and writes no row; any other later archive that day backs up to `<worktree name>.2`, `.3`, and so on), then `git worktree remove`. Branches are never deleted. Restore with `git worktree add <path> refs/archive/<YYYY-MM-DD>/<name>`.
 
 A merged worktree is kept, and the skip is logged, when any of these is true:
 
 - An agent is running in it.
 - A review is no longer checked out on its `pr-<N>` branch (or a detached HEAD).
 - Its archive ref for the day already points at a different commit.
+- A work stream is no longer on the branch whose PR merged.
 
 PRs closed without merging are left alone.
 

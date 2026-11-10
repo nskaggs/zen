@@ -27,6 +27,7 @@ type prByHeadFunc func(ctx context.Context, fullRepo, headOwner, branch string) 
 type CleanupReconciler struct {
 	cfg            *config.Config
 	prMergeInfo    prMergeInfoFunc
+	prByHead       prByHeadFunc
 	deployVerified deployVerifiedFunc
 }
 
@@ -121,7 +122,27 @@ func (r *CleanupReconciler) reconcileFeature(ctx context.Context, repo string, p
 	if err != nil {
 		return fmt.Errorf("GitHub client: %w", err)
 	}
+	findPR, err := r.findPR(ctx)
+	if err != nil {
+		return fmt.Errorf("GitHub client: %w", err)
+	}
 	fullRepo := r.cfg.RepoFullName(repo)
+
+	// The scan may be stale: the worktree must still be on the branch whose
+	// PR this key names. ArchiveBranch checks the branch again under its lock.
+	branch, detached, err := wt.CurrentBranch(worktreePath)
+	if err != nil {
+		return fmt.Errorf("inspect branch: %w", err)
+	}
+	if detached {
+		logf("Cleanup skipped for %s: HEAD is detached", label)
+		return nil
+	}
+	if n := featurePR(ctx, fullRepo, wt.Worktree{Path: worktreePath, Branch: branch}, findPR); n != prNumber {
+		logf("Cleanup skipped for %s: branch %s is now the head of PR #%d", label, branch, n)
+		return nil
+	}
+
 	info, err := lookup(ctx, fullRepo, prNumber)
 	if err != nil {
 		return fmt.Errorf("fetch PR merge state: %w", err)
@@ -145,7 +166,7 @@ func (r *CleanupReconciler) reconcileFeature(ctx context.Context, repo string, p
 		return nil
 	}
 
-	archived, err := wt.Archive(originPath, worktreePath)
+	archived, err := wt.ArchiveBranch(originPath, worktreePath, branch)
 	if err != nil {
 		if wt.RemovalBlocked(err) {
 			logf("Cleanup skipped for %s: %v", label, err)
@@ -166,6 +187,17 @@ func logArchived(label string, a *wt.Archived) {
 		wip = " after a WIP commit"
 	}
 	logf("Archived %s at %s%s (%s)", label, a.Ref, wip, a.Manifest)
+}
+
+func (r *CleanupReconciler) findPR(ctx context.Context) (prByHeadFunc, error) {
+	if r.prByHead != nil {
+		return r.prByHead, nil
+	}
+	client, err := ghpkg.NewClient(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return client.FindPRByHead, nil
 }
 
 func (r *CleanupReconciler) lookup(ctx context.Context) (prMergeInfoFunc, error) {

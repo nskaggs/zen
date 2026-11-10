@@ -58,13 +58,13 @@ The daemon uses [driftlessaf](https://github.com/driftlessaf) workqueues with tw
     │  key ──→ ParsePRKey("app:42")    │    │  key ──→ ParsePRKey("app:35") │
     │          repo=app, pr=42         │    │          repo=app, pr=35      │
     │                                      │    │                                   │
-    │  Step 1: ensureWorktree             │    │  Step 1: RemoveReview             │
+    │  Step 1: ensureWorktree             │    │  Step 1: ArchiveReview            │
     │  ┌─────────────────────────────┐    │    │  ┌─────────────────────────────┐  │
     │  │ missing: fetch pull/N/head │    │    │  │ missing? skip               │  │
     │  │   into pr-N, worktree add   │    │    │  │ unmerged / too recent? skip │  │
     │  │ exists: fetch into          │    │    │  │ not on pr-N branch? skip    │  │
-    │  │   origin/pr-N, ff-only      │    │    │  │ dirty/untracked/active? skip│  │
-    │  │ skip: dirty or live agent    │    │    │  │ commits beyond PR head? skip│  │
+    │  │   origin/pr-N, ff-only      │    │    │  │ running agent? skip         │  │
+    │  │ skip: dirty or live agent    │    │    │  │ WIP commit, refs/archive    │  │
     │  │ rewritten: skip (CLI       │    │    │  │ git worktree remove         │  │
     │  │   prompts before reset)     │    │    │  └─────────────────────────────┘  │
     │  └─────────────────────────────┘    │    │         │ safety refusal: SKIP    │
