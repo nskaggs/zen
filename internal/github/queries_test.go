@@ -539,3 +539,16 @@ func TestGetReviewRequestsForRepos_noRepos(t *testing.T) {
 		t.Fatalf("queried GitHub with no configured repos: %v", f.queries)
 	}
 }
+
+func TestParseSupervisedPRs(t *testing.T) {
+	open := []byte(`{"data":{"viewer":{"login":"me"},"search":{"nodes":[{"number":1,"state":"OPEN","repository":{"nameWithOwner":"o/r"},"commits":{"nodes":[{"commit":{"statusCheckRollup":{"state":"FAILURE"}}}]}},{}]}}}`)
+	decisions := []byte(`{"data":{"search":{"nodes":[{"number":1,"reviewDecision":"APPROVED","repository":{"nameWithOwner":"o/r"}}]}}}`)
+	merged := []byte(`{"data":{"search":{"nodes":[{"number":2,"state":"MERGED"}]}}}`)
+	login, prs, err := parseSupervisedPRs(open, decisions, merged)
+	if err != nil || login != "me" || len(prs) != 2 {
+		t.Fatalf("login %q prs %+v err %v", login, prs, err)
+	}
+	if prs[0].ReviewDecision != "APPROVED" || prs[0].RollupState() != "FAILURE" || prs[1].RollupState() != "" {
+		t.Fatalf("prs %+v", prs)
+	}
+}

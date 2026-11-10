@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -22,6 +23,7 @@ import (
 	"github.com/mgreau/zen/internal/notify"
 	"github.com/mgreau/zen/internal/reconciler"
 	slackpkg "github.com/mgreau/zen/internal/slack"
+	"github.com/mgreau/zen/internal/supervisor"
 	"github.com/mgreau/zen/internal/ui"
 	wt "github.com/mgreau/zen/internal/worktree"
 	"github.com/spf13/cobra"
@@ -312,6 +314,33 @@ func watchDaemon() error {
 	}
 	slackSeen := loadSeenSlack()
 
+	// PR supervisor (opt-in): drives your own PRs to ready-to-merge and,
+	// once landing is approved, through merge and deploy. A poll runs in
+	// the background so a slow GitHub read never stalls the loop; a tick
+	// that finds the previous poll still running is skipped.
+	var supC <-chan time.Time
+	var supPoll func()
+	if cfg.Supervisor.Enabled {
+		sup := supervisor.New(cfg)
+		var supBusy atomic.Bool
+		supPoll = func() {
+			if !supBusy.CompareAndSwap(false, true) {
+				return
+			}
+			go func() {
+				defer supBusy.Store(false)
+				if err := sup.Poll(ctx); err != nil {
+					fmt.Printf("[%s] Supervisor poll error: %v\n", time.Now().Format(time.RFC3339), err)
+				}
+			}()
+		}
+		supTicker := time.NewTicker(cfg.Supervisor.PollIntervalDuration())
+		defer supTicker.Stop()
+		supC = supTicker.C
+		fmt.Printf("[%s] PR supervisor enabled (poll=%s, wake_timeout=%s, max_wakes=%d)\n", time.Now().Format(time.RFC3339),
+			cfg.Supervisor.PollIntervalDuration(), cfg.Supervisor.WakeTimeoutDuration(), cfg.Supervisor.GetMaxWakes())
+	}
+
 	pollTicker := time.NewTicker(pollInterval)
 	defer pollTicker.Stop()
 	dispatchTicker := time.NewTicker(dispatchInterval)
@@ -352,6 +381,9 @@ func watchDaemon() error {
 		}
 	}
 	reconciler.ScanSessions(cfg, 10*time.Second)
+	if supPoll != nil {
+		supPoll()
+	}
 
 	for {
 		select {
@@ -366,6 +398,9 @@ func watchDaemon() error {
 		case <-pollTicker.C:
 			reloadConfig(setupRec, cleanupRec, slackRec, pollTicker)
 			pollOnce(ctx, st, setupQueue, setupRec)
+
+		case <-supC:
+			supPoll()
 
 		case <-slackC:
 			pollSlackOnce(ctx, slackClient, slackSeen, slackQueue)
