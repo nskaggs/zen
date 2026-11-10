@@ -59,7 +59,19 @@ type Supervisor struct {
 	failures    int
 	nextAllowed time.Time
 	last        Snapshot
+
+	// land-watch runs in the background: deploy tracking for a day of merged
+	// PRs takes minutes, which must not hold up the rest of a poll.
+	lwMu    sync.Mutex
+	lwDone  chan struct{} // non-nil while a run is in flight
+	lwOut   string
+	lwErr   error
+	lwFresh bool // lwErr is from a run no poll has reported yet
 }
+
+// landWatchWait is how long a poll waits for land-watch before using the
+// previous run's result.
+var landWatchWait = 20 * time.Second
 
 // New builds a supervisor wired to GitHub, git, land-watch, and the
 // configured agent.
@@ -131,14 +143,7 @@ func (s *Supervisor) Poll(ctx context.Context) error {
 			watch = append(watch, LandEntry{Repo: full, Number: pr.Number})
 		}
 	}
-	lw := map[string]landLine{}
-	if len(watch) > 0 {
-		out, err := s.deps.landWatch(ctx, watch)
-		if err != nil {
-			s.event(Event{Time: now, PR: "land-watch", Kind: "error", Detail: truncate(err.Error(), 160)})
-		}
-		lw = parseLandWatchAll(out)
-	}
+	lw := s.landWatchResult(ctx, watch, now)
 
 	var items []Item
 	for _, pr := range prs {
@@ -391,6 +396,43 @@ func parseLandWatchAll(out string) map[string]landLine {
 
 // runLandWatch runs land-watch --arm with a persistent cache in dir. Exit
 // status 1 only means a deploy stage failed; its output is still used.
+// landWatchResult starts a land-watch run over watch unless one is already in
+// flight, waits up to landWatchWait for it, and returns the newest finished
+// run's lines. A slow run is picked up by a later poll.
+func (s *Supervisor) landWatchResult(ctx context.Context, watch []LandEntry, now time.Time) map[string]landLine {
+	if len(watch) == 0 {
+		return map[string]landLine{}
+	}
+	s.lwMu.Lock()
+	if s.lwDone == nil {
+		done := make(chan struct{})
+		s.lwDone = done
+		go func() {
+			out, err := s.deps.landWatch(ctx, watch)
+			s.lwMu.Lock()
+			s.lwOut, s.lwErr, s.lwFresh, s.lwDone = out, err, true, nil
+			s.lwMu.Unlock()
+			close(done)
+		}()
+	}
+	done := s.lwDone
+	s.lwMu.Unlock()
+	if done != nil {
+		select {
+		case <-done:
+		case <-time.After(landWatchWait):
+		case <-ctx.Done():
+		}
+	}
+	s.lwMu.Lock()
+	defer s.lwMu.Unlock()
+	if s.lwFresh && s.lwErr != nil {
+		s.event(Event{Time: now, PR: "land-watch", Kind: "error", Detail: truncate(s.lwErr.Error(), 160)})
+	}
+	s.lwFresh = false
+	return parseLandWatchAll(s.lwOut)
+}
+
 func runLandWatch(dir string) landWatchFunc {
 	return func(ctx context.Context, entries []LandEntry) (string, error) {
 		bin, err := exec.LookPath("land-watch")

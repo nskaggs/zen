@@ -506,3 +506,38 @@ func TestPollDropsLandedApprovals(t *testing.T) {
 		t.Fatalf("land list %+v", left)
 	}
 }
+
+func TestPollDoesNotWaitOnSlowLandWatch(t *testing.T) {
+	defer func(w time.Duration) { landWatchWait = w }(landWatchWait)
+	landWatchWait = 10 * time.Millisecond
+	pr := openPR(1)
+	pr.State, pr.MergedAt = "MERGED", now.Format(time.RFC3339)
+	f := newFake(t, []ghpkg.SupervisedPR{pr}, false)
+	release := make(chan struct{})
+	runs := 0
+	f.deps.landWatch = func(context.Context, []LandEntry) (string, error) {
+		runs++
+		<-release
+		return "o/r#1 url=u state=MERGED landed=yes", nil
+	}
+	if err := f.Poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Poll(context.Background()); err != nil { // run still in flight: no second run
+		t.Fatal(err)
+	}
+	if snap, _ := LoadSnapshot(f.dir); snap.Items[0].Owner == OwnerLanded {
+		t.Fatal("landed before land-watch finished")
+	}
+	close(release)
+	waitFor(t, func() bool {
+		if err := f.Poll(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		snap, _ := LoadSnapshot(f.dir)
+		return snap.Items[0].Owner == OwnerLanded
+	})
+	if runs < 2 {
+		t.Fatalf("runs = %d, want a fresh run after the first finished", runs)
+	}
+}
