@@ -265,8 +265,8 @@ func copyEntry(src, dst string) error {
 	return outFile.Close()
 }
 
-// appendManifest appends row unless a row for the same worktree, head, and
-// archive ref is already there, so a retried archive writes it once.
+// appendManifest appends row unless a row for the same worktree, path, head,
+// and archive ref is already there, so a retried archive writes it once.
 func appendManifest(path string, row []string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("create archive manifest dir: %w", err)
@@ -277,7 +277,7 @@ func appendManifest(path string, row []string) error {
 	}
 	for _, line := range strings.Split(string(existing), "\n") {
 		f := strings.Split(line, "\t")
-		if len(f) >= 5 && f[0] == row[0] && f[3] == row[3] && f[4] == row[4] {
+		if len(f) >= 5 && f[0] == row[0] && f[1] == row[1] && f[3] == row[3] && f[4] == row[4] {
 			return nil
 		}
 	}
