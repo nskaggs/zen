@@ -107,6 +107,8 @@ Two shapes reach that prompt. History **diverged** — git refuses the fast-forw
 
 **Merged cleanup.** Every `cleanup_interval`, `ScanMergedPRs` looks up each PR review worktree on GitHub, and each work stream's PR (its branch as a PR head under each GitHub owner in the worktree's remotes), and queues the ones whose PR merged at least `cleanup_after_merge` ago (default 1h). Reviews use the key `repo:N`; work streams use `repo:N:worktree-name`. The clock starts at GitHub's `mergedAt`, not at the worktree's last commit. PRs closed without merging are never queued. `CleanupReconciler` checks the merge again; for a work stream it also runs `land-watch` for the PR and continues only on `landed=yes` or when every stage is `status=none` (no deploy ran), so a work stream is archived only after its deploy is verified. It then archives the worktree (`worktree.Archive`): uncommitted work is committed, `HEAD` is pinned at `refs/archive/<date>/<name>`, git-ignored files are copied under `~/.zen/state/archive/<date>/<name>/`, a manifest row is written under `~/.zen/state/archive/`, and the worktree is removed. Because the archive ref keeps every commit, local changes and commits beyond the PR head no longer block cleanup. A running agent, a review no longer on its `pr-N` branch, or an archive ref already at another commit is a logged skip. `land-watch` and Git failures retry.
 
+**PR supervisor.** With `supervisor.enabled`, a separate ticker (`supervisor.poll_interval`) runs `supervisor.Poll` in the background; a tick that finds the previous poll still running is skipped. It reads the user's PRs in one GraphQL call, derives an owner and next step per PR (`internal/supervisor/model.go`), takes the deterministic steps, and starts agent wakes through a bounded `Waker`. Its state is in `~/.zen/state/supervisor/` and `~/.zen/state/land.json`; see [configuration.md](configuration.md#pr-supervisor).
+
 **Errors.** Git failures retry with exponential backoff (30s..10m, max 5 attempts). Context injection and PR cache writes are non-blocking — failures are logged but do not prevent the worktree from being created.
 
 **Notifications.** A first sighting with no local worktree sends “New PR Review Request”, whether or not the author is in `authors:`. `WorktreeReady` fires after create; `PRUpdated` fires after a successful fast-forward. PRs already in the inbox when you upgrade are not re-announced (see [configuration.md](configuration.md#upgrading)).
@@ -134,6 +136,7 @@ zen
 │   ├── review/                   # Shared worktree creation logic (CLI + MCP)
 │   ├── session/                  # Shared session types + Claude session detection
 │   ├── slack/                    # Minimal Slack Web API client for the task watcher
+│   ├── supervisor/               # PR supervisor: state derivation, actions, agent wakes, `zen sup` view
 │   ├── terminal/                 # Terminal backend abstraction (iterm/ghostty/kitty/macos)
 │   ├── ui/                       # Terminal formatting
 │   └── worktree/                 # Git worktree discovery + management

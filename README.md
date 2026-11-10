@@ -201,6 +201,17 @@ zen watch logs search 42         # search logs for a PR, worktree, or keyword
 
 React to a Slack message with `:claudecode:` (or whatever emoji you configure) and the daemon picks it up: acks in-thread, creates a feature worktree seeded with the discussion as the initial prompt, and opens it in a terminal tab right away — unlike the PR-review flow, which only prepares worktrees silently. When that session goes idle, you get a Slack DM back with a resume command and a link to the thread. Off by default; see [docs/configuration.md](docs/configuration.md#slack-task-watcher) for setup (a Slack token with a handful of scopes, via `ZEN_SLACK_TOKEN`).
 
+### PR supervisor (opt-in)
+
+With `supervisor.enabled: true` the daemon keeps your own PRs moving: it updates branches that fall behind, reruns checks that failed for infrastructure reasons, and wakes an agent in the PR's worktree for a real CI failure, a merge conflict, or review feedback, once per distinct state. Merging waits only on you: `zen land mono#123` approves a PR, and the daemon arms auto-merge once approvals exist, watches the deploy, and archives the worktree. `zen sup` is the phone-sized view of who owns each PR's next step. See [docs/configuration.md](docs/configuration.md#pr-supervisor).
+
+```bash
+zen land mono#123 infra#45       # approve landing
+zen land                         # list approved PRs
+zen land --remove mono#123       # withdraw approval
+zen sup                          # live view; --once for one frame, --json for the snapshot
+```
+
 Manual cleanup, in case you want it. The daemon archives merged PR reviews on its own, an hour or so after merge by default, and work streams once their deploy is verified. `zen archive <name>` archives one worktree now. `zen cleanup` finds stale worktrees, and the daemon never runs it:
 
 ```bash

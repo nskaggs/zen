@@ -527,3 +527,14 @@ watch:
 		t.Errorf("CleanupAfterDays = %d, want 7", cfg.Watch.CleanupAfterDays)
 	}
 }
+
+func TestSupervisorDefaults(t *testing.T) {
+	var s SupervisorConfig
+	if s.PollIntervalDuration() != 2*time.Minute || s.WakeTimeoutDuration() != 30*time.Minute || s.GetMaxWakes() != 3 {
+		t.Fatal("unexpected supervisor defaults")
+	}
+	s = SupervisorConfig{PollInterval: "5m", WakeTimeout: "bogus", MaxWakes: 1}
+	if s.PollIntervalDuration() != 5*time.Minute || s.WakeTimeoutDuration() != 30*time.Minute || s.GetMaxWakes() != 1 {
+		t.Fatal("unexpected supervisor overrides")
+	}
+}
