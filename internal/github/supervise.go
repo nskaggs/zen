@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -75,8 +76,8 @@ func (p SupervisedPR) RollupState() string {
 	return p.Commits.Nodes[0].Commit.StatusCheckRollup.State
 }
 
-const supervisedFields = `
-      number title url state isDraft reviewDecision mergeable mergedAt
+const openFields = `
+      number title url state isDraft mergeable mergedAt
       baseRefName headRefName headRefOid
       repository { name nameWithOwner }
       autoMergeRequest { enabledAt }
@@ -85,57 +86,98 @@ const supervisedFields = `
       }
       commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }`
 
-// GetSupervisedPRs reads, in one GraphQL call, every open PR the user
-// authored plus the ones merged since mergedSince, across all repositories,
-// and the viewer's login. Filtering to configured repositories is the
-// caller's job: a search scoped to the user's own PRs stays small, so one
-// unscoped query replaces one per repository.
-func GetSupervisedPRs(ctx context.Context, mergedSince time.Time) (login string, prs []SupervisedPR, err error) {
-	ctx, cancel := withTimeout(ctx)
-	defer cancel()
-	query := `query($open: String!, $merged: String!) {
-  viewer { login }
-  open: search(query: $open, type: ISSUE, first: 50) { nodes { ... on PullRequest {` + supervisedFields + ` } } }
-  merged: search(query: $merged, type: ISSUE, first: 50) { nodes { ... on PullRequest {` + supervisedFields + ` } } }
-}`
+const mergedFields = `
+      number title url state mergedAt baseRefName headRefName headRefOid
+      repository { name nameWithOwner }`
+
+// GetSupervisedPRs reads every open PR the user authored plus the ones
+// merged since mergedSince, across all repositories, and the viewer's login.
+// Filtering to configured repositories is the caller's job: a search scoped
+// to the user's own PRs stays small, so unscoped searches replace one per
+// repository. GitHub computes reviewDecision slowly, so it is read in its own
+// search, in parallel with the others; one combined query ran into GitHub's
+// 10-second limit and failed with HTTP 502.
+func GetSupervisedPRs(ctx context.Context, mergedSince time.Time) (string, []SupervisedPR, error) {
 	open := "is:pr is:open author:@me archived:false"
 	merged := "is:pr is:merged author:@me merged:>=" + mergedSince.UTC().Format("2006-01-02T15:04:05Z")
-	cmd := exec.CommandContext(ctx, "gh", "api", "graphql",
-		"-f", "query="+query, "-f", "open="+open, "-f", "merged="+merged)
-	out, err := cmd.Output()
-	if err != nil {
-		if ctx.Err() == context.DeadlineExceeded {
-			return "", nil, fmt.Errorf("supervised PRs query timed out after %s", apiTimeout)
-		}
-		return "", nil, fmt.Errorf("GraphQL query failed: %s", ghError(err))
+	queries := []string{
+		`query($q: String!) { viewer { login } search(query: $q, type: ISSUE, first: 50) { nodes { ... on PullRequest {` + openFields + ` } } } }`,
+		`query($q: String!) { search(query: $q, type: ISSUE, first: 50) { nodes { ... on PullRequest { number reviewDecision repository { nameWithOwner } } } } }`,
+		`query($q: String!) { search(query: $q, type: ISSUE, first: 50) { nodes { ... on PullRequest {` + mergedFields + ` } } } }`,
 	}
-	return parseSupervisedPRs(out)
+	terms := []string{open, open, merged}
+	outs := make([][]byte, len(queries))
+	errs := make([]error, len(queries))
+	var wg sync.WaitGroup
+	for i := range queries {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			outs[i], errs[i] = searchGraphQL(ctx, queries[i], terms[i])
+		}()
+	}
+	wg.Wait()
+	for _, err := range errs {
+		if err != nil {
+			return "", nil, err
+		}
+	}
+	return parseSupervisedPRs(outs[0], outs[1], outs[2])
 }
 
-func parseSupervisedPRs(out []byte) (string, []SupervisedPR, error) {
-	var result struct {
-		Data struct {
-			Viewer struct {
-				Login string `json:"login"`
-			} `json:"viewer"`
-			Open struct {
-				Nodes []SupervisedPR `json:"nodes"`
-			} `json:"open"`
-			Merged struct {
-				Nodes []SupervisedPR `json:"nodes"`
-			} `json:"merged"`
-		} `json:"data"`
+func searchGraphQL(ctx context.Context, query, q string) ([]byte, error) {
+	ctx, cancel := withTimeout(ctx)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "gh", "api", "graphql", "-f", "query="+query, "-f", "q="+q).Output()
+	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return nil, fmt.Errorf("supervised PRs query timed out after %s", apiTimeout)
+		}
+		return nil, fmt.Errorf("GraphQL query failed: %s", ghError(err))
 	}
-	if err := json.Unmarshal(out, &result); err != nil {
-		return "", nil, fmt.Errorf("parsing GraphQL response: %w", err)
+	return out, nil
+}
+
+type searchResult struct {
+	Data struct {
+		Viewer struct {
+			Login string `json:"login"`
+		} `json:"viewer"`
+		Search struct {
+			Nodes []SupervisedPR `json:"nodes"`
+		} `json:"search"`
+	} `json:"data"`
+}
+
+// parseSupervisedPRs joins the open search, the review-decision search, and
+// the merged search.
+func parseSupervisedPRs(openOut, decisionOut, mergedOut []byte) (string, []SupervisedPR, error) {
+	var open, decisions, merged searchResult
+	for _, r := range []struct {
+		out []byte
+		dst *searchResult
+	}{{openOut, &open}, {decisionOut, &decisions}, {mergedOut, &merged}} {
+		if err := json.Unmarshal(r.out, r.dst); err != nil {
+			return "", nil, fmt.Errorf("parsing GraphQL response: %w", err)
+		}
+	}
+	decision := map[string]string{}
+	for _, pr := range decisions.Data.Search.Nodes {
+		decision[pr.Repository.NameWithOwner+"#"+strconv.Itoa(pr.Number)] = pr.ReviewDecision
 	}
 	var prs []SupervisedPR
-	for _, pr := range append(result.Data.Open.Nodes, result.Data.Merged.Nodes...) {
+	for _, pr := range open.Data.Search.Nodes {
+		if pr.Number != 0 {
+			pr.ReviewDecision = decision[pr.Repository.NameWithOwner+"#"+strconv.Itoa(pr.Number)]
+			prs = append(prs, pr)
+		}
+	}
+	for _, pr := range merged.Data.Search.Nodes {
 		if pr.Number != 0 {
 			prs = append(prs, pr)
 		}
 	}
-	return result.Data.Viewer.Login, prs, nil
+	return open.Data.Viewer.Login, prs, nil
 }
 
 // PRCheck is one check on a PR's head commit, as `gh pr view --json
