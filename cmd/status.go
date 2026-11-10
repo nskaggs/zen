@@ -280,7 +280,7 @@ func enrichPRReviews(wts []worktree.Worktree, prCache map[string]prcache.PRMeta)
 			if info, err := ghClient.GetPRMergeInfo(ctx, fullRepo, wt.PRNumber); err == nil {
 				r.State = info.State
 				if info.State == "MERGED" && !info.MergedAt.IsZero() {
-					// The daemon removes merged reviews cleanup_after_merge
+					// The daemon archives merged reviews cleanup_after_merge
 					// after GitHub's mergedAt; whole days, rounded down.
 					if remaining := time.Until(info.MergedAt.Add(cleanupAfter)); remaining > 0 {
 						r.CleanupIn = int(remaining.Hours() / 24)

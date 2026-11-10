@@ -224,42 +224,37 @@ func runWorkNew(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+// findWorktreeExact finds a worktree by exact name, then by path.
+func findWorktreeExact(target string) (*wt.Worktree, error) {
+	wts, err := wt.ListAll(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("listing worktrees: %w", err)
+	}
+	for _, w := range wts {
+		if w.Name == target {
+			return &w, nil
+		}
+	}
+	absTarget := target
+	if !filepath.IsAbs(absTarget) {
+		if abs, err := filepath.Abs(absTarget); err == nil {
+			absTarget = abs
+		}
+	}
+	for _, w := range wts {
+		if w.Path == absTarget {
+			return &w, nil
+		}
+	}
+	return nil, fmt.Errorf("no worktree found matching %q", target)
+}
+
 func runWorkDelete(cmd *cobra.Command, args []string) error {
 	target := args[0]
 
-	// Find matching worktree by name first, then by path
-	wts, err := wt.ListAll(cfg)
+	match, err := findWorktreeExact(target)
 	if err != nil {
-		return fmt.Errorf("listing worktrees: %w", err)
-	}
-
-	var match *wt.Worktree
-	for _, w := range wts {
-		if w.Name == target {
-			w := w
-			match = &w
-			break
-		}
-	}
-	if match == nil {
-		// Try absolute path match
-		absTarget := target
-		if !filepath.IsAbs(absTarget) {
-			if abs, err := filepath.Abs(absTarget); err == nil {
-				absTarget = abs
-			}
-		}
-		for _, w := range wts {
-			if w.Path == absTarget {
-				w := w
-				match = &w
-				break
-			}
-		}
-	}
-
-	if match == nil {
-		return fmt.Errorf("no worktree found matching %q", target)
+		return err
 	}
 
 	ag, err := resolveAgent()

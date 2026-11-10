@@ -19,9 +19,10 @@ var cleanupCmd = &cobra.Command{
 	Short: "Find stale worktrees, including work streams (manual only)",
 	Long: `Find stale worktrees and, with --delete, remove them after asking.
 
-This command is manual only: the watch daemon never runs it. The daemon only
-removes PR review worktrees after their PR merges. zen cleanup also covers work
-streams (feature worktrees from zen work new and the Slack watcher). A worktree
+This command is manual only: the watch daemon never runs it. The daemon
+archives merged PR reviews, and work streams whose PR merged and whose deploy
+land-watch verified (see zen archive). zen cleanup also covers work streams
+(feature worktrees from zen work new and the Slack watcher). A worktree
 is listed as stale when:
   - it is a PR review whose PR merged or was closed without merging,
   - it is a work stream whose branch has a merged or closed PR, or

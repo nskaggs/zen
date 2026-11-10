@@ -201,6 +201,25 @@ func (c *Client) GetPRStateByBranch(ctx context.Context, fullRepo, branch string
 	return strings.ToUpper(pr.GetState()), pr.GetNumber(), nil
 }
 
+// FindPRByHead returns the number of the newest PR in fullRepo whose head is
+// headOwner:branch, in any state, or 0 when there is none. headOwner is the
+// owner of the repository the branch was pushed to, which for fork-based work
+// differs from fullRepo's owner.
+func (c *Client) FindPRByHead(ctx context.Context, fullRepo, headOwner, branch string) (int, error) {
+	owner, repo := splitRepo(fullRepo)
+	prs, _, err := c.gh.PullRequests.List(ctx, owner, repo, &gh.PullRequestListOptions{
+		Head:  headOwner + ":" + branch,
+		State: "all",
+	})
+	if err != nil {
+		return 0, fmt.Errorf("listing PRs for %s:%s: %w", headOwner, branch, err)
+	}
+	if len(prs) == 0 {
+		return 0, nil
+	}
+	return prs[0].GetNumber(), nil
+}
+
 // IsRequestedReviewer checks if the given user login is a requested reviewer on a PR.
 func (c *Client) IsRequestedReviewer(ctx context.Context, fullRepo string, prNumber int, login string) (bool, error) {
 	owner, repo := splitRepo(fullRepo)

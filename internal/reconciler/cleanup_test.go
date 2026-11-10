@@ -2,9 +2,11 @@ package reconciler
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -55,7 +57,7 @@ func TestCleanupReconcile_MissingWorktree(t *testing.T) {
 	}
 }
 
-func TestCleanupReconcile_DirtyWorktreeIsTerminalSkip(t *testing.T) {
+func TestCleanupReconcile_ArchivesDirtyReviewWithWIPCommit(t *testing.T) {
 	cfg, worktreePath, prHead := cleanupFixture(t)
 	if err := os.WriteFile(filepath.Join(worktreePath, "notes.txt"), []byte("keep me"), 0o644); err != nil {
 		t.Fatal(err)
@@ -63,30 +65,37 @@ func TestCleanupReconcile_DirtyWorktreeIsTerminalSkip(t *testing.T) {
 
 	rec := NewCleanupReconciler(cfg)
 	rec.prMergeInfo = mergedInfo(prHead, 2*time.Hour)
-	err := rec.Reconcile(context.Background(), "testrepo:999", workqueue.Options{})
-	if err != nil {
-		t.Fatalf("dirty worktree should be a terminal skip: %v", err)
+	if err := rec.Reconcile(context.Background(), "testrepo:999", workqueue.Options{}); err != nil {
+		t.Fatalf("Reconcile() error: %v", err)
 	}
-	if _, err := os.Stat(worktreePath); err != nil {
-		t.Fatal("dirty worktree was removed")
+	if _, err := os.Stat(worktreePath); !os.IsNotExist(err) {
+		t.Fatal("dirty merged review was not archived")
+	}
+	ref := archiveRef(t, cfg, "testrepo", "testrepo-pr-999")
+	if files := cleanupGitOut(t, filepath.Join(filepath.Dir(worktreePath), "testrepo"), "ls-tree", "-r", "--name-only", ref); !strings.Contains(files, "notes.txt") {
+		t.Fatalf("archive %s is missing notes.txt: %s", ref, files)
 	}
 }
 
-func TestCleanupReconcile_LocalCommitIsTerminalSkip(t *testing.T) {
+func TestCleanupReconcile_ArchiveKeepsLocalCommit(t *testing.T) {
 	cfg, worktreePath, prHead := cleanupFixture(t)
 	if err := os.WriteFile(filepath.Join(worktreePath, "tracked"), []byte("reviewer fix"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	runCleanupGit(t, worktreePath, "commit", "-am", "reviewer fix")
+	local := cleanupGitOut(t, worktreePath, "rev-parse", "HEAD")
 
 	rec := NewCleanupReconciler(cfg)
 	rec.prMergeInfo = mergedInfo(prHead, 2*time.Hour)
-	err := rec.Reconcile(context.Background(), "testrepo:999", workqueue.Options{})
-	if err != nil {
-		t.Fatalf("a local commit beyond the PR head should be a terminal skip: %v", err)
+	if err := rec.Reconcile(context.Background(), "testrepo:999", workqueue.Options{}); err != nil {
+		t.Fatalf("Reconcile() error: %v", err)
 	}
-	if _, err := os.Stat(worktreePath); err != nil {
-		t.Fatal("worktree with a local commit was removed")
+	if _, err := os.Stat(worktreePath); !os.IsNotExist(err) {
+		t.Fatal("merged review with a local commit was not archived")
+	}
+	ref := archiveRef(t, cfg, "testrepo", "testrepo-pr-999")
+	if got := cleanupGitOut(t, filepath.Join(filepath.Dir(worktreePath), "testrepo"), "rev-parse", ref); got != local {
+		t.Fatalf("%s = %s, want local commit %s", ref, got, local)
 	}
 }
 
@@ -144,6 +153,9 @@ func TestScanMergedPRs(t *testing.T) {
 	runCleanupGit(t, originPath, "worktree", "add", "-b", "pr-2", filepath.Join(basePath, "mono-pr-2"))
 	runCleanupGit(t, originPath, "worktree", "add", "-b", "mgreau/fix-pr-3", filepath.Join(basePath, "mono-fix-pr-3"))
 	runCleanupGit(t, originPath, "worktree", "add", "-b", "pr-4", filepath.Join(basePath, "mono-pr-4"))
+	runCleanupGit(t, originPath, "worktree", "add", "-b", "nskaggs/feat", filepath.Join(basePath, "mono-feat"))
+	runCleanupGit(t, originPath, "remote", "add", "origin", "https://github.com/example/mono.git")
+	runCleanupGit(t, originPath, "remote", "add", "nskaggs", "git@github.com:nskaggs/mono.git")
 
 	now := time.Now()
 	prs := map[int]ghpkg.PRMergeInfo{
@@ -151,6 +163,7 @@ func TestScanMergedPRs(t *testing.T) {
 		2: {State: "MERGED", MergedAt: now.Add(-2 * time.Hour)},
 		3: {State: "MERGED", MergedAt: now.Add(-2 * time.Hour)},
 		4: {State: "CLOSED"},
+		5: {State: "MERGED", MergedAt: now.Add(-2 * time.Hour)},
 	}
 	var looked []int
 	lookup := func(_ context.Context, fullRepo string, prNumber int) (*ghpkg.PRMergeInfo, error) {
@@ -166,7 +179,13 @@ func TestScanMergedPRs(t *testing.T) {
 		"mono": {FullName: "example/mono", BasePath: basePath},
 	}}
 	queue := inmem.NewWorkQueue(10)
-	scanMergedPRs(context.Background(), cfg, queue, lookup, time.Hour, now)
+	findPR := func(_ context.Context, fullRepo, owner, branch string) (int, error) {
+		if owner == "nskaggs" && branch == "nskaggs/feat" {
+			return 5, nil
+		}
+		return 0, nil
+	}
+	scanMergedPRs(context.Background(), cfg, queue, lookup, findPR, time.Hour, now)
 
 	_, queued, _, err := queue.Enumerate(context.Background())
 	if err != nil {
@@ -176,9 +195,11 @@ func TestScanMergedPRs(t *testing.T) {
 	for _, k := range queued {
 		keys = append(keys, k.Name())
 	}
-	// PR 1 merged 30m ago (< 1h), PR 3 is a work stream, PR 4 never merged.
-	if strings.Join(keys, ",") != "mono:2" {
-		t.Errorf("queued %v, want [mono:2]", keys)
+	// PR 1 merged 30m ago (< 1h), PR 3 is a work stream with no PR of its
+	// own, PR 4 never merged, PR 5 is mono-feat's PR from the nskaggs fork.
+	sort.Strings(keys)
+	if strings.Join(keys, ",") != "mono:2,mono:5:mono-feat" {
+		t.Errorf("queued %v, want [mono:2 mono:5:mono-feat]", keys)
 	}
 	for _, pr := range looked {
 		if pr == 3 {
@@ -191,6 +212,7 @@ func TestScanMergedPRs(t *testing.T) {
 // the review worktree <base>/testrepo-pr-999 on branch pr-999.
 func cleanupFixture(t *testing.T) (cfg *config.Config, worktreePath, prHead string) {
 	t.Helper()
+	t.Setenv("ZEN_HOME", t.TempDir())
 	basePath := t.TempDir()
 	originPath := filepath.Join(basePath, "testrepo")
 	worktreePath = filepath.Join(basePath, "testrepo-pr-999")
@@ -226,6 +248,104 @@ func mergedInfo(prHead string, ago time.Duration) prMergeInfoFunc {
 	return func(context.Context, string, int) (*ghpkg.PRMergeInfo, error) {
 		return &ghpkg.PRMergeInfo{State: "MERGED", HeadSHA: prHead, MergedAt: time.Now().Add(-ago)}, nil
 	}
+}
+
+func TestCleanupReconcile_Feature(t *testing.T) {
+	tests := []struct {
+		name         string
+		ago          time.Duration
+		verified     bool
+		verifyErr    error
+		wantArchived bool
+		wantErr      bool
+	}{
+		{name: "landed", ago: 2 * time.Hour, verified: true, wantArchived: true},
+		{name: "deploy not verified", ago: 2 * time.Hour},
+		{name: "land-watch failed", ago: 2 * time.Hour, verifyErr: errors.New("gh: rate limited"), wantErr: true},
+		{name: "merged too recently", ago: 30 * time.Minute, verified: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("ZEN_HOME", t.TempDir())
+			basePath := t.TempDir()
+			originPath := filepath.Join(basePath, "mono")
+			worktreePath := filepath.Join(basePath, "mono-feat")
+			initCleanupRepo(t, basePath, originPath)
+			runCleanupGit(t, originPath, "worktree", "add", "-b", "nskaggs/feat", worktreePath)
+			if err := os.WriteFile(filepath.Join(worktreePath, "follow-up.txt"), []byte("wip"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			cfg := &config.Config{Repos: map[string]config.RepoConfig{
+				"mono": {FullName: "example/mono", BasePath: basePath},
+			}}
+
+			rec := NewCleanupReconciler(cfg)
+			rec.prMergeInfo = mergedInfo("", tt.ago)
+			verifyCalls := 0
+			rec.deployVerified = func(_ context.Context, fullRepo string, prNumber int) (bool, string, error) {
+				verifyCalls++
+				if fullRepo != "example/mono" || prNumber != 5 {
+					t.Errorf("verify(%s, %d), want example/mono 5", fullRepo, prNumber)
+				}
+				return tt.verified, "example/mono#5 landed=no", tt.verifyErr
+			}
+			err := rec.Reconcile(context.Background(), MakeFeatureKey("mono", 5, "mono-feat"), workqueue.Options{})
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("Reconcile() error = %v, wantErr %t", err, tt.wantErr)
+			}
+			if tt.ago < time.Hour && verifyCalls != 0 {
+				t.Error("deploy was checked before cleanup_after_merge passed")
+			}
+			_, statErr := os.Stat(worktreePath)
+			if archived := os.IsNotExist(statErr); archived != tt.wantArchived {
+				t.Fatalf("archived = %t, want %t", archived, tt.wantArchived)
+			}
+			if tt.wantArchived {
+				ref := archiveRef(t, cfg, "mono", "mono-feat")
+				if files := cleanupGitOut(t, originPath, "ls-tree", "-r", "--name-only", ref); !strings.Contains(files, "follow-up.txt") {
+					t.Fatalf("archive %s is missing follow-up.txt: %s", ref, files)
+				}
+				if branch := cleanupGitOut(t, originPath, "rev-parse", "nskaggs/feat"); branch != cleanupGitOut(t, originPath, "rev-parse", ref) {
+					t.Fatal("branch does not hold the archived commit")
+				}
+			}
+		})
+	}
+}
+
+func TestParseFeatureKeyRejectsReviewKeys(t *testing.T) {
+	if _, _, _, err := ParseFeatureKey(MakePRKey("mono", 42)); err == nil {
+		t.Fatal("a review key parsed as a feature key")
+	}
+	if _, _, err := ParsePRKey(MakeFeatureKey("mono", 42, "mono-feat")); err == nil {
+		t.Fatal("a feature key parsed as a review key")
+	}
+	repo, n, name, err := ParseFeatureKey(MakeFeatureKey("mono", 42, "mono-feat"))
+	if err != nil || repo != "mono" || n != 42 || name != "mono-feat" {
+		t.Fatalf("ParseFeatureKey() = %q %d %q %v", repo, n, name, err)
+	}
+}
+
+// archiveRef returns the single archive ref made for worktree name.
+func archiveRef(t *testing.T, cfg *config.Config, repo, name string) string {
+	t.Helper()
+	origin := filepath.Join(cfg.RepoBasePath(repo), repo)
+	refs := cleanupGitOut(t, origin, "for-each-ref", "--format=%(refname)", "refs/archive/")
+	if !strings.HasSuffix(refs, "/"+name) || strings.Contains(refs, "\n") {
+		t.Fatalf("archive refs = %q, want one ending in /%s", refs, name)
+	}
+	return refs
+}
+
+func cleanupGitOut(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git %v: %v", args, err)
+	}
+	return strings.TrimSpace(string(out))
 }
 
 func runCleanupGit(t *testing.T, directory string, args ...string) {

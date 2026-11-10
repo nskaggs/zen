@@ -41,7 +41,7 @@ var prPattern = regexp.MustCompile(`-pr-(\d+)$`)
 // <branch_prefix>/fix-pr-123). A review must also be checked out on the
 // PRBranch zen creates for that same PR, or on a detached HEAD. branch is the
 // checked-out branch name, empty when detached. Anything else is feature work,
-// which the daemon's merged-review cleanup never touches.
+// which the daemon archives only after its own PR lands.
 func Classify(name, branch string, detached bool) (Type, int) {
 	m := prPattern.FindStringSubmatch(name)
 	if m == nil {
