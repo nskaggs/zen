@@ -543,3 +543,26 @@ func TestPollDoesNotWaitOnSlowLandWatch(t *testing.T) {
 		return snap.Items[0].Owner == OwnerLanded
 	})
 }
+
+func TestDeriveMergedSettles(t *testing.T) {
+	pr := openPR(1)
+	pr.State, pr.MergedAt = "MERGED", now.Add(-2*time.Hour).Format(time.RFC3339)
+	cases := []struct {
+		d     *Deploy
+		owner Owner
+	}{
+		{nil, OwnerLanded},
+		{&Deploy{Class: "merged_ok"}, OwnerLanded},
+		{&Deploy{Class: "pending_deploy", Stage: "prod pending"}, OwnerDeploying},
+		{&Deploy{Class: "waiting_release"}, OwnerDeploying},
+	}
+	for _, tc := range cases {
+		item, _ := Derive(Observed{PR: pr, Deploy: tc.d, SettleAfter: time.Hour}, now)
+		if item.Owner != tc.owner {
+			t.Fatalf("%+v: got %s %q", tc.d, item.Owner, item.Summary)
+		}
+	}
+	if item, _ := Derive(Observed{PR: pr, SettleAfter: 3 * time.Hour}, now); item.Owner != OwnerDeploying {
+		t.Fatalf("settled inside the window: %s", item.Owner)
+	}
+}

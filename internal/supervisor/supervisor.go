@@ -181,6 +181,7 @@ func (s *Supervisor) Poll(ctx context.Context) error {
 			d := l.deploy()
 			o.Deploy = &d
 		}
+		o.SettleAfter = s.cfg.Watch.CleanupAfterMergeDuration()
 		if l, ok := lw[key]; ok && pr.State == "OPEN" {
 			s.noteArm(key, pr, l, now)
 		}

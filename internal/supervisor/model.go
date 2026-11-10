@@ -87,6 +87,9 @@ type Observed struct {
 	Wake        *WakeRun // a wake running or queued for this PR
 	Memory      PRMemory
 	Deploy      *Deploy // merged PRs only, nil when land-watch has no answer
+	// SettleAfter is how long after merging a PR with no deploy in flight
+	// counts as landed (watch.cleanup_after_merge).
+	SettleAfter time.Duration
 }
 
 // PRMemory is what the supervisor remembers about a PR between polls.
@@ -273,6 +276,12 @@ func Derive(o Observed, now time.Time) (Item, []Action) {
 	if pr.State == "MERGED" {
 		item.MergedAt, _ = time.Parse(time.RFC3339, pr.MergedAt)
 		item.Owner, item.Summary = deployState(o.Deploy)
+		// No deploy signal, or nothing in flight, long after the merge: it
+		// has landed as far as anyone can tell. Only live deploys stay.
+		settled := o.Deploy == nil || o.Deploy.None || o.Deploy.Class == "merged_ok"
+		if item.Owner == OwnerDeploying && settled && o.SettleAfter > 0 && !item.MergedAt.IsZero() && now.Sub(item.MergedAt) > o.SettleAfter {
+			item.Owner, item.Summary = OwnerLanded, "merged · no deploy in flight"
+		}
 		return item, nil
 	}
 

@@ -222,6 +222,7 @@ All state lives in `~/.zen/state/` (or `$ZEN_HOME/state/`):
 | `supervisor/snapshot.json` | The PR supervisor's last poll, read by `zen sup` |
 | `supervisor/board.md` | The same view as Markdown, for agents |
 | `supervisor/events.jsonl` | Every supervisor action and wake result |
+| Merged with no deploy in flight, older than `watch.cleanup_after_merge` | Shown under LANDED TODAY, not DEPLOYING |
 | `supervisor/memory.json` | Per-PR state between polls: last handled trigger, reruns, branch updates |
 
 ## Upgrading
