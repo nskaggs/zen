@@ -236,7 +236,7 @@ func (s *Supervisor) drainWakes(memory map[string]PRMemory, now time.Time) {
 		select {
 		case r := <-s.waker.Results():
 			mem := memory[r.PR]
-			mem.HandledKey = r.Key
+			mem.HandledKey, mem.Waking = r.Key, false
 			kind := "fixed"
 			if r.Fixed {
 				mem.Stuck = ""
@@ -287,7 +287,7 @@ func (s *Supervisor) act(ctx context.Context, a Action, o Observed, mem PRMemory
 		}
 		in.Diffstat, _ = s.deps.exec(ctx, o.Worktree, "git", "diff", "--stat", "origin/"+pr.BaseRefName+"...HEAD")
 		if s.waker.Start(ctx, key, a.Key, is.Describe(), o.Worktree, BuildBrief(in)) {
-			mem.HandledKey, mem.HandledHead, mem.Stuck = a.Key, pr.HeadRefOid, ""
+			mem.HandledKey, mem.HandledHead, mem.Stuck, mem.Waking = a.Key, pr.HeadRefOid, "", true
 			if mem.FixingSince.IsZero() {
 				mem.FixingSince = now
 			}

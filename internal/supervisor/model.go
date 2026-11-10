@@ -97,6 +97,10 @@ type PRMemory struct {
 	// HandledHead is the head commit when that wake started; a different
 	// head now means the agent pushed.
 	HandledHead string `json:"handled_head,omitempty"`
+	// Waking is set while that wake has not reported back. If it is still
+	// set with no wake running, the daemon restarted mid-wake and the wake
+	// is lost, so the state is woken again.
+	Waking bool `json:"waking,omitempty"`
 	// Stuck is set when that wake failed, timed out, or reported STUCK.
 	Stuck string `json:"stuck,omitempty"`
 	// RerunHead and UpdateHead are the head SHAs already rerun or updated.
@@ -290,6 +294,9 @@ func Derive(o Observed, now time.Time) (Item, []Action) {
 	switch {
 	case is.Judgment() && !enrolled:
 		set(OwnerYou, "no worktree: "+is.Describe())
+	case is.Judgment() && o.Memory.HandledKey == key && o.Memory.Waking && !o.SessionOpen:
+		set(OwnerAgent, "requeued after restart: "+is.Describe())
+		actions = append(actions, Action{Kind: ActionWake, Key: key})
 	case is.Judgment() && o.Memory.HandledKey == key && o.Memory.Stuck != "":
 		set(OwnerYou, "stuck: "+o.Memory.Stuck)
 	case is.Judgment() && o.SessionOpen:

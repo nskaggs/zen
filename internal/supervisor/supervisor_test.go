@@ -94,6 +94,7 @@ func TestDerive(t *testing.T) {
 		{"no worktree no action", Observed{PR: openPR(1), Checks: []ghpkg.PRCheck{failing("test")}}, OwnerYou, "no worktree", nil},
 		{"session open no wake", Observed{PR: openPR(1), Worktree: "/w", SessionOpen: true, Checks: []ghpkg.PRCheck{failing("test")}}, OwnerAgent, "session open", nil},
 		{"handled and stuck", Observed{PR: openPR(1), Worktree: "/w", Checks: []ghpkg.PRCheck{failing("test")}, Memory: PRMemory{HandledKey: ciKey, HandledHead: "aaaaaaaaaa", Stuck: "needs a decision"}}, OwnerYou, "stuck: needs a decision", nil},
+		{"lost wake requeues", Observed{PR: openPR(1), Worktree: "/w", Checks: []ghpkg.PRCheck{failing("test")}, Memory: PRMemory{HandledKey: ciKey, HandledHead: "aaaaaaaaaa", Waking: true}}, OwnerAgent, "requeued after restart", []ActionKind{ActionWake}},
 		{"handled no push", Observed{PR: openPR(1), Worktree: "/w", Checks: []ghpkg.PRCheck{failing("test")}, Memory: PRMemory{HandledKey: ciKey, HandledHead: "aaaaaaaaaa"}}, OwnerYou, "pushed no fix", nil},
 		{"fix window over", Observed{PR: openPR(1), Worktree: "/w", Checks: []ghpkg.PRCheck{failing("test")}, Memory: PRMemory{FixingSince: now.Add(-5 * time.Hour)}}, OwnerYou, "still failing", nil},
 		{"review thread wakes", Observed{PR: reviewed, Worktree: "/w", Self: "me"}, OwnerAgent, "1 review thread", []ActionKind{ActionWake}},
