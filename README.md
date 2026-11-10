@@ -109,6 +109,14 @@ zen work delete <name>                         # delete worktree (cleans Claude 
 
 Feature branches are prefixed by `branch_prefix` from config — see [docs/configuration.md](docs/configuration.md).
 
+Every delete path (`zen work delete`, `zen review delete`, `zen cleanup
+--delete`) retains worktrees with local changes or a running agent. The delete
+commands' `--force` flag skips confirmation; it does not override those safety
+checks. The daemon's merged cleanup and `zen archive` keep everything instead:
+they commit uncommitted work, pin `HEAD` under `refs/archive/`, and copy
+ignored files to `~/.zen/state/archive/`. They still skip a worktree with a
+running agent.
+
 ## Where am I?
 
 Different lenses on what you're doing across worktrees.
@@ -179,7 +187,7 @@ Session ID, model, token usage, and last activity per worktree.
 
 Two loops keep zen useful.
 
-The **automated loop** is the daemon. It polls GitHub and notifies you of new review requests. Worktrees for `authors:` are created silently, with context already injected, and existing review checkouts fast-forward when the PR head moves. Local edits and live agents are left alone; a force-push waits for `zen review`, which asks before resetting. After a successful catch-up you get a quieter “PR #N updated”. Merged worktrees are removed a few days later. The daemon never opens terminal tabs.
+The **automated loop** is the daemon. It polls GitHub and notifies you of new review requests. Worktrees for `authors:` are created silently, with context already injected, and existing review checkouts fast-forward when the PR head moves. Local edits and live agents are left alone; a force-push waits for `zen review`, which asks before resetting. After a successful catch-up you get a quieter “PR #N updated”. A review worktree is archived once its PR has been merged for `cleanup_after_merge` (1h by default); a work stream is archived once its PR has also landed, meaning `land-watch` verified its deploy. The daemon never opens terminal tabs.
 
 The **manual loop** is yours: check what needs your attention, open a worktree in a new tab with Claude, do the work.
 
@@ -195,12 +203,13 @@ zen watch logs search 42         # search logs for a PR, worktree, or keyword
 
 React to a Slack message with `:claudecode:` (or whatever emoji you configure) and the daemon picks it up: acks in-thread, creates a feature worktree seeded with the discussion as the initial prompt, and opens it in a terminal tab right away — unlike the PR-review flow, which only prepares worktrees silently. When that session goes idle, you get a Slack DM back with a resume command and a link to the thread. Off by default; see [docs/configuration.md](docs/configuration.md#slack-task-watcher) for setup (a Slack token with a handful of scopes, via `ZEN_SLACK_TOKEN`).
 
-Manual cleanup, in case you want it (the daemon handles merged PRs automatically, 5+ days after merge):
+Manual cleanup, in case you want it. The daemon archives merged PR reviews on its own, an hour or so after merge by default, and work streams once their deploy is verified. `zen archive <name>` archives one worktree now. `zen cleanup` finds stale worktrees, and the daemon never runs it:
 
 ```bash
-zen cleanup                      # find stale worktrees
+zen cleanup                      # find stale worktrees, work streams included
 zen cleanup --days 14            # custom age threshold
 zen cleanup --delete             # interactive deletion
+zen archive mono-my-feature      # keep its work in Git, then remove it
 ```
 
 Daemon internals are in [docs/architecture.md](docs/architecture.md). After installing a new zen, restart `zen watch` so the new binary is what polls GitHub — existing worktrees are not rebuilt. See [docs/configuration.md](docs/configuration.md#upgrading).

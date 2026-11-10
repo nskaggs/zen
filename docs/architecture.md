@@ -12,10 +12,12 @@ PR metadata (titles, authors) is cached in a lightweight JSON file (`~/.zen/stat
 
 | Type | Worktree pattern | Branch pattern | Example |
 |------|------------------|----------------|---------|
-| PR review | `<repo>-pr-<number>` | (fetched from remote) | `app-pr-42` |
+| PR review | `<repo>-pr-<number>` | `pr-<number>` (fetched from `pull/<number>/head`) | `app-pr-42` → `pr-42` |
 | Feature | `<repo>-<branch>` | `<branch_prefix>/<branch>` | `app-add-oidc-claims` → `mgreau/add-oidc-claims` |
 
 The git branch for feature worktrees uses `branch_prefix` from config (falling back to `git config user.name`, then no prefix). The worktree directory name itself is always `<repo>-<branch>` regardless of prefix.
+
+A worktree is classified as a PR review only when both columns match: the name ends in `-pr-<number>` and the checked-out branch is `pr-<number>` for the same number, or HEAD is detached (`worktree.Classify`). The name alone is not enough, because `zen work new app fix-pr-42` creates `app-fix-pr-42` on `mgreau/fix-pr-42`. That worktree is feature work, and the daemon never removes it when PR 42 merges.
 
 ## Daemon architecture
 
@@ -56,18 +58,18 @@ The daemon uses [driftlessaf](https://github.com/driftlessaf) workqueues with tw
     │  key ──→ ParsePRKey("app:42")    │    │  key ──→ ParsePRKey("app:35") │
     │          repo=app, pr=42         │    │          repo=app, pr=35      │
     │                                      │    │                                   │
-    │  Step 1: ensureWorktree             │    │  Step 1: removeWorktree           │
+    │  Step 1: ensureWorktree             │    │  Step 1: ArchiveReview            │
     │  ┌─────────────────────────────┐    │    │  ┌─────────────────────────────┐  │
-    │  │ missing: fetch pull/N/head │    │    │  │ if missing? skip            │  │
-    │  │   into pr-N, worktree add   │    │    │  │ git worktree remove --force │  │
-    │  │ exists: fetch into          │    │    │  └─────────────────────────────┘  │
-    │  │   origin/pr-N, ff-only      │    │    │         │                         │
-    │  │ skip: dirty or live agent    │    │    │         v on error: RETRY         │
-    │  │ rewritten: skip (CLI       │    │    └───────────────────────────────────┘
-    │  │   prompts before reset)     │    │
-    │  └─────────────────────────────┘    │
-    │         │                           │
-    │         v on error: RETRY           │
+    │  │ missing: fetch pull/N/head │    │    │  │ missing? skip               │  │
+    │  │   into pr-N, worktree add   │    │    │  │ unmerged / too recent? skip │  │
+    │  │ exists: fetch into          │    │    │  │ not on pr-N branch? skip    │  │
+    │  │   origin/pr-N, ff-only      │    │    │  │ running agent? skip         │  │
+    │  │ skip: dirty or live agent    │    │    │  │ WIP commit, refs/archive    │  │
+    │  │ rewritten: skip (CLI       │    │    │  │ git worktree remove         │  │
+    │  │   prompts before reset)     │    │    │  └─────────────────────────────┘  │
+    │  └─────────────────────────────┘    │    │         │ safety refusal: SKIP    │
+    │         │                           │    │         v Git/fs error: RETRY     │
+    │         v on error: RETRY           │    └───────────────────────────────────┘
     │                                      │
     │  Step 2: ensureContextInjected      │
     │  ┌─────────────────────────────┐    │     ┌──────────────────────────────────┐
@@ -102,6 +104,8 @@ Each step is **idempotent** — safe to re-run if interrupted.
 **Rewritten history.** A worktree that cannot be fast-forwarded needs `git reset --hard`, and nothing resets it unattended. The daemon and MCP never do. `zen review` and `zen review resume` prompt `[y/N]` (default no) **only when stdin is a terminal**: a piped or redirected run declines, so `yes | zen review <n>` cannot answer for you. `--json` never resets. Untracked files stay; the previous tip stays in the reflog.
 
 Two shapes reach that prompt. History **diverged** — git refuses the fast-forward outright. Or GitHub's head is an **ancestor** of the worktree: a force-push backward, or a commit made locally in the checkout. `git merge --ff-only` reports "Already up to date" for the second case without moving anything, so zen re-reads `HEAD` after the merge and treats "did not reach the target" the same as a refused fast-forward. Only a `HEAD` that actually landed on the fetched head counts as an update, which is what keeps context rewrites and “PR #N updated” notifications from repeating every poll.
+
+**Merged cleanup.** Every `cleanup_interval`, `ScanMergedPRs` looks up each PR review worktree on GitHub, and each work stream's PR (its branch as a PR head under each GitHub owner in the worktree's remotes), and queues the ones whose PR merged at least `cleanup_after_merge` ago (default 1h). Reviews use the key `repo:N`; work streams use `repo:N:worktree-name`. The clock starts at GitHub's `mergedAt`, not at the worktree's last commit. PRs closed without merging are never queued. `CleanupReconciler` checks the merge again; for a work stream it also runs `land-watch` for the PR and continues only on `landed=yes` or when every stage is `status=none` (no deploy ran), so a work stream is archived only after its deploy is verified. It then archives the worktree (`worktree.Archive`): uncommitted work is committed, `HEAD` is pinned at `refs/archive/<date>/<name>`, git-ignored files are copied under `~/.zen/state/archive/<date>/<name>/`, a manifest row is written under `~/.zen/state/archive/`, and the worktree is removed. Because the archive ref keeps every commit, local changes and commits beyond the PR head no longer block cleanup. A running agent, a review no longer on its `pr-N` branch, or an archive ref already at another commit is a logged skip. `land-watch` and Git failures retry.
 
 **Errors.** Git failures retry with exponential backoff (30s..10m, max 5 attempts). Context injection and PR cache writes are non-blocking — failures are logged but do not prevent the worktree from being created.
 

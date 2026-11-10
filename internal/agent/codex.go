@@ -61,9 +61,10 @@ func (a *codexAgent) ResumeCommand(sessionID, model string) string {
 }
 
 // ContextFile is AGENTS.md, the project-context file Codex reads automatically.
-func (a *codexAgent) ContextFile() string { return "AGENTS.md" }
+func (a *codexAgent) ContextFile() string { return codexContextFile }
 
 const (
+	codexContextFile     = "AGENTS.md"
 	codexSideContextFile = ".zen/PR_CONTEXT.md"
 	// codexSentinel marks that zen has injected PR context, regardless of which
 	// file received it. It makes daemon idempotency reliable even when the repo
@@ -102,10 +103,12 @@ func (a *codexAgent) InjectContext(worktreePath, rendered string) (string, error
 		return "", fmt.Errorf("writing %s: %w", outPath, err)
 	}
 
-	// Drop the idempotency sentinel (best-effort).
+	// Record which file this injection owns. The sentinel is also the
+	// idempotency marker, and its contents let cleanup preserve a user-owned
+	// AGENTS.md when context was written to the side file.
 	sentinel := filepath.Join(worktreePath, codexSentinel)
 	if err := os.MkdirAll(filepath.Dir(sentinel), 0o755); err == nil {
-		_ = os.WriteFile(sentinel, nil, 0o644)
+		_ = os.WriteFile(sentinel, []byte(ref), 0o644)
 	}
 
 	addToGitExclude(worktreePath, ".zen/")

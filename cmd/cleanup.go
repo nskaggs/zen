@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -17,8 +16,22 @@ import (
 
 var cleanupCmd = &cobra.Command{
 	Use:   "cleanup",
-	Short: "Find stale worktrees (merged PRs, old branches)",
-	RunE:  runCleanup,
+	Short: "Find stale worktrees, including work streams (manual only)",
+	Long: `Find stale worktrees and, with --delete, remove them after asking.
+
+This command is manual only: the watch daemon never runs it. The daemon
+archives merged PR reviews, and work streams whose PR merged and whose deploy
+land-watch verified (see zen archive). zen cleanup also covers work streams
+(feature worktrees from zen work new and the Slack watcher). A worktree
+is listed as stale when:
+  - it is a PR review whose PR merged or was closed without merging,
+  - it is a work stream whose branch has a merged or closed PR, or
+  - its last commit is older than --days (default 30).
+
+Deletion keeps any worktree with uncommitted or untracked changes, or with a
+running agent. It does not check for unpushed commits; the worktree's branch
+stays in the repository after removal.`,
+	RunE: runCleanup,
 }
 
 var (
@@ -196,10 +209,8 @@ func deleteWorktree(s staleWorktree) bool {
 		return false
 	}
 
-	removeCmd := exec.Command("git", "worktree", "remove", s.Path, "--force")
-	removeCmd.Dir = originPath
-	if err := removeCmd.Run(); err != nil {
-		fmt.Printf("    %s\n", ui.RedText("✗ Failed to remove"))
+	if err := worktree.Remove(originPath, s.Path); err != nil {
+		fmt.Printf("    %s\n", ui.RedText("✗ "+err.Error()))
 		return false
 	}
 

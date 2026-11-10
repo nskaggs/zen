@@ -53,8 +53,8 @@ ignore_drafts: true
 watch:
   dispatch_interval: "10s"      # How often to process queued work
   cleanup_interval: "1h"        # How often to scan for merged PRs
+  cleanup_after_merge: "1h"     # Time after a PR merges before its worktree is archived
   session_scan_interval: "10s"  # How often to scan Claude session states
-  cleanup_after_days: 5         # Days after merge before removing worktree
   concurrency: 2                # Parallel worktree setups
   max_retries: 5                # Max retry attempts for git failures
 
@@ -70,6 +70,26 @@ slack:
 The daemon re-reads `config.yaml` on every poll tick. Changes to `poll_interval`, `authors`, `repos`, and other settings take effect without restarting.
 
 On each poll, setup re-runs if GitHub's head SHA differs from the worktree. Linear updates fast-forward. Local edits and a live agent are left alone. A head that cannot be fast-forwarded onto — rewritten, or behind the worktree — waits for `zen review`, which asks before `reset --hard` and only from a terminal.
+
+## Merged-review cleanup
+
+Every `cleanup_interval`, the daemon archives the worktrees of merged PRs. The delay is a Go duration such as `30m` or `6h`, measured from GitHub's merge time; it defaults to `1h`, and `0s` archives on the next scan.
+
+- **PR reviews** (worktrees named `<repo>-pr-<N>`, checked out on the `pr-<N>` branch zen created or on a detached HEAD) are archived once their PR merged at least `cleanup_after_merge` ago.
+- **Work streams** are archived once their branch's PR merged at least `cleanup_after_merge` ago and its deploy is verified. Zen finds the PR by looking up the branch as a PR head under each GitHub owner in the worktree's remotes, so a branch pushed to a fork counts. Deploy verification runs `land-watch` (without `--arm`, so it only reads) for that PR. It passes on `landed=yes` (every deploy stage land-watch found for the merge commit succeeded), or when every stage line is `status=none` (no push run matched land-watch's deploy pattern, as for a docs-only change). A pending, waiting, or failed stage never passes. Without `land-watch` on `PATH`, work streams stay until you run `zen archive`.
+
+Archiving is what `zen archive <name>` does: commit any uncommitted work (staged content first, then tracked changes and untracked files, honoring `.gitignore`, never zen's generated context) as `wip: archive uncommitted work before worktree removal`, pin `HEAD` at `refs/archive/<YYYY-MM-DD>/<worktree name>`, copy every git-ignored file (except zen's generated context) to `~/.zen/state/archive/<YYYY-MM-DD>/<worktree name>/`, append a row to `~/.zen/state/archive/<YYYY-MM-DD>.tsv` (worktree, path, branch, head, archive ref, ignored-file backup dir; a retry with identical ignored files reuses the recorded backup and writes no row; any other later archive that day backs up to `<worktree name>.2`, `.3`, and so on), then `git worktree remove`. Branches are never deleted. Restore with `git worktree add <path> refs/archive/<YYYY-MM-DD>/<name>`.
+
+A merged worktree is kept, and the skip is logged, when any of these is true:
+
+- An agent is running in it.
+- A review is no longer checked out on its `pr-<N>` branch (or a detached HEAD).
+- Its archive ref for the day already points at a different commit.
+- A work stream is no longer on the branch whose PR merged.
+
+PRs closed without merging are left alone.
+
+`cleanup_after_days` is deprecated and ignored. It delayed removal until a merged review had no new commits for that many days, which let merged reviews pile up.
 
 ## Repos
 
@@ -184,5 +204,7 @@ zen watch start
 ```
 
 Existing review worktrees stay in place. On the next poll they fast-forward if GitHub has moved and the tree is idle. In-flight reviews (local edits or a live agent) are left alone. You will not get a second “new review request” for PRs that were already in the inbox. If an author force-pushed while you were away, run `zen review <n>` — it asks before resetting.
+
+`cleanup_after_days` can stay in `config.yaml`; it is ignored. After the restart, the first cleanup scan (one `cleanup_interval` later) archives every review whose PR merged more than `cleanup_after_merge` ago and passes the checks in [Merged-review cleanup](#merged-review-cleanup).
 
 Older zen wrote `seen_prs` (PR numbers only) in `last_check.json`. The first poll after upgrade absorbs that list into `notified_new` and never writes `seen_prs` again.

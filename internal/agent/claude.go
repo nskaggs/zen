@@ -38,14 +38,23 @@ func (a *claudeAgent) ResumeCommand(sessionID, model string) string {
 }
 
 // ContextFile is CLAUDE.local.md so the repo's own CLAUDE.md is never touched.
-func (a *claudeAgent) ContextFile() string { return "CLAUDE.local.md" }
+func (a *claudeAgent) ContextFile() string { return claudeContextFile }
 
 func (a *claudeAgent) InjectContext(worktreePath, rendered string) (string, error) {
 	ref := a.ContextFile()
 	outPath := filepath.Join(worktreePath, ref)
+	sentinel := filepath.Join(worktreePath, claudeContextSentinel)
+	if err := os.MkdirAll(filepath.Dir(sentinel), 0o755); err != nil {
+		return "", fmt.Errorf("creating Claude context marker directory: %w", err)
+	}
+	if err := os.WriteFile(sentinel, nil, 0o644); err != nil {
+		return "", fmt.Errorf("writing Claude context marker: %w", err)
+	}
 	if err := os.WriteFile(outPath, []byte(rendered), 0o644); err != nil {
+		_ = os.Remove(sentinel)
 		return "", fmt.Errorf("writing %s: %w", outPath, err)
 	}
+	addToGitExclude(worktreePath, ".zen/")
 	return ref, nil
 }
 

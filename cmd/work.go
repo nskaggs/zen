@@ -3,8 +3,9 @@ package cmd
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
+	"strings"
+	"unicode"
 
 	"github.com/mgreau/zen/internal/terminal"
 	"github.com/mgreau/zen/internal/ui"
@@ -23,7 +24,8 @@ var workNewCmd = &cobra.Command{
 	Short: "Create a new feature worktree and open in iTerm2",
 	Long: `Create a new feature worktree from origin/main and open it in a new iTerm2 tab.
 
-The branch will be prefixed with mgreau/ per naming convention.
+The branch will be prefixed with mgreau/ per naming convention. The branch
+name must be a single path segment: no "/", whitespace, or leading "-".
 Optionally provide a context string to use as the initial Claude prompt.`,
 	Args: cobra.RangeArgs(2, 3),
 	RunE: runWorkNew,
@@ -132,9 +134,23 @@ func runWork(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+// validateWorkBranch rejects names that would not map to one sibling
+// worktree directory. The directory is "<repo>-<branch>", so a "/" would
+// create a nested directory that discovery then lists under its last path
+// element.
+func validateWorkBranch(branch string) error {
+	if branch == "" || strings.HasPrefix(branch, "-") || strings.Contains(branch, "/") || strings.ContainsFunc(branch, unicode.IsSpace) {
+		return fmt.Errorf("invalid branch name %q: use a single path segment without \"/\", whitespace, or a leading \"-\"", branch)
+	}
+	return nil
+}
+
 func runWorkNew(cmd *cobra.Command, args []string) error {
 	repo := args[0]
 	branch := args[1]
+	if err := validateWorkBranch(branch); err != nil {
+		return err
+	}
 	context := ""
 	if len(args) == 3 {
 		context = args[2]
@@ -208,42 +224,37 @@ func runWorkNew(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+// findWorktreeExact finds a worktree by exact name, then by path.
+func findWorktreeExact(target string) (*wt.Worktree, error) {
+	wts, err := wt.ListAll(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("listing worktrees: %w", err)
+	}
+	for _, w := range wts {
+		if w.Name == target {
+			return &w, nil
+		}
+	}
+	absTarget := target
+	if !filepath.IsAbs(absTarget) {
+		if abs, err := filepath.Abs(absTarget); err == nil {
+			absTarget = abs
+		}
+	}
+	for _, w := range wts {
+		if w.Path == absTarget {
+			return &w, nil
+		}
+	}
+	return nil, fmt.Errorf("no worktree found matching %q", target)
+}
+
 func runWorkDelete(cmd *cobra.Command, args []string) error {
 	target := args[0]
 
-	// Find matching worktree by name first, then by path
-	wts, err := wt.ListAll(cfg)
+	match, err := findWorktreeExact(target)
 	if err != nil {
-		return fmt.Errorf("listing worktrees: %w", err)
-	}
-
-	var match *wt.Worktree
-	for _, w := range wts {
-		if w.Name == target {
-			w := w
-			match = &w
-			break
-		}
-	}
-	if match == nil {
-		// Try absolute path match
-		absTarget := target
-		if !filepath.IsAbs(absTarget) {
-			if abs, err := filepath.Abs(absTarget); err == nil {
-				absTarget = abs
-			}
-		}
-		for _, w := range wts {
-			if w.Path == absTarget {
-				w := w
-				match = &w
-				break
-			}
-		}
-	}
-
-	if match == nil {
-		return fmt.Errorf("no worktree found matching %q", target)
+		return err
 	}
 
 	ag, err := resolveAgent()
@@ -294,10 +305,8 @@ func runWorkDelete(cmd *cobra.Command, args []string) error {
 	basePath := cfg.RepoBasePath(match.Repo)
 	originPath := filepath.Join(basePath, match.Repo)
 
-	removeCmd := exec.Command("git", "worktree", "remove", match.Path, "--force")
-	removeCmd.Dir = originPath
-	if out, err := removeCmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("git worktree remove: %w: %s", err, string(out))
+	if err := wt.Remove(originPath, match.Path); err != nil {
+		return err
 	}
 	ui.LogSuccess("Removed worktree")
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	gh "github.com/google/go-github/v75/github"
 )
@@ -79,6 +80,39 @@ func (c *Client) GetPRState(ctx context.Context, fullRepo string, prNumber int) 
 	return strings.ToUpper(pr.GetState()), nil
 }
 
+// PRMergeInfo is what merged-review cleanup needs to know about a PR.
+type PRMergeInfo struct {
+	State    string    // OPEN, CLOSED, or MERGED
+	HeadSHA  string    // the PR's last head commit
+	MergedAt time.Time // zero unless the PR is merged
+}
+
+// GetPRMergeInfo returns a PR's state, head commit, and merge time.
+func (c *Client) GetPRMergeInfo(ctx context.Context, fullRepo string, prNumber int) (*PRMergeInfo, error) {
+	owner, repo := splitRepo(fullRepo)
+	pr, _, err := c.gh.PullRequests.Get(ctx, owner, repo, prNumber)
+	if err != nil {
+		return nil, fmt.Errorf("fetching PR #%d: %w", prNumber, err)
+	}
+	return prMergeInfoFrom(pr), nil
+}
+
+// prMergeInfoFrom copies the merge fields of a go-github PR. Head can be nil
+// when the author deletes the fork; callers must not panic.
+func prMergeInfoFrom(pr *gh.PullRequest) *PRMergeInfo {
+	info := &PRMergeInfo{
+		State:   strings.ToUpper(pr.GetState()),
+		HeadSHA: pr.GetHead().GetSHA(),
+	}
+	if pr.GetMerged() {
+		info.State = "MERGED"
+	}
+	if ts := pr.GetMergedAt(); !ts.Time.IsZero() {
+		info.MergedAt = ts.Time
+	}
+	return info
+}
+
 // GetPRAuthor returns the login of the PR author.
 func (c *Client) GetPRAuthor(ctx context.Context, fullRepo string, prNumber int) (string, error) {
 	owner, repo := splitRepo(fullRepo)
@@ -149,22 +183,44 @@ func (c *Client) GetReviewStatus(ctx context.Context, fullRepo string, prNumber 
 // ("MERGED", "CLOSED", "OPEN") and PR number of the first match.
 // Returns ("", 0, nil) if no PR found for that branch.
 func (c *Client) GetPRStateByBranch(ctx context.Context, fullRepo, branch string) (string, int, error) {
-	owner, repo := splitRepo(fullRepo)
-	prs, _, err := c.gh.PullRequests.List(ctx, owner, repo, &gh.PullRequestListOptions{
-		Head:  owner + ":" + branch,
-		State: "all",
-	})
-	if err != nil {
-		return "", 0, fmt.Errorf("listing PRs for branch %s: %w", branch, err)
+	owner, _ := splitRepo(fullRepo)
+	pr, err := c.newestPRByHead(ctx, fullRepo, owner, branch)
+	if err != nil || pr == nil {
+		return "", 0, err
 	}
-	if len(prs) == 0 {
-		return "", 0, nil
-	}
-	pr := prs[0]
 	if pr.GetMerged() {
 		return "MERGED", pr.GetNumber(), nil
 	}
 	return strings.ToUpper(pr.GetState()), pr.GetNumber(), nil
+}
+
+// FindPRByHead returns the number of the newest PR in fullRepo whose head is
+// headOwner:branch, in any state, or 0 when there is none. headOwner is the
+// owner of the repository the branch was pushed to, which for fork-based work
+// differs from fullRepo's owner.
+func (c *Client) FindPRByHead(ctx context.Context, fullRepo, headOwner, branch string) (int, error) {
+	pr, err := c.newestPRByHead(ctx, fullRepo, headOwner, branch)
+	if err != nil || pr == nil {
+		return 0, err
+	}
+	return pr.GetNumber(), nil
+}
+
+// newestPRByHead returns the first PR GitHub lists for head headOwner:branch
+// in any state, or nil when there is none.
+func (c *Client) newestPRByHead(ctx context.Context, fullRepo, headOwner, branch string) (*gh.PullRequest, error) {
+	owner, repo := splitRepo(fullRepo)
+	prs, _, err := c.gh.PullRequests.List(ctx, owner, repo, &gh.PullRequestListOptions{
+		Head:  headOwner + ":" + branch,
+		State: "all",
+	})
+	if err != nil {
+		return nil, fmt.Errorf("listing PRs for %s:%s: %w", headOwner, branch, err)
+	}
+	if len(prs) == 0 {
+		return nil, nil
+	}
+	return prs[0], nil
 }
 
 // IsRequestedReviewer checks if the given user login is a requested reviewer on a PR.

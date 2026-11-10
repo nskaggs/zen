@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -196,10 +195,8 @@ func runReviewDelete(cmd *cobra.Command, args []string) error {
 	basePath := cfg.RepoBasePath(match.Repo)
 	originPath := filepath.Join(basePath, match.Repo)
 
-	removeCmd := exec.Command("git", "worktree", "remove", match.Path, "--force")
-	removeCmd.Dir = originPath
-	if out, err := removeCmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("git worktree remove: %w: %s", err, string(out))
+	if err := wt.Remove(originPath, match.Path); err != nil {
+		return err
 	}
 
 	ui.LogSuccess(fmt.Sprintf("Deleted worktree: %s", shortPath))
