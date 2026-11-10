@@ -20,7 +20,7 @@ var supCmd = &cobra.Command{
 	Long: `Show what the PR supervisor in the watch daemon sees: your open and
 recently merged PRs grouped by who owns the next step (you, an agent, a
 reviewer, the deploy), each in two lines, plus its recent actions. Lines are
-at most 56 columns so the view fits a portrait phone through Agent Console.
+at most 48 columns so the view fits a 360px portrait phone through Agent Console.
 
 Redraws every few seconds until interrupted. --once prints one frame;
 --json prints the snapshot. The daemon writes the snapshot each poll when

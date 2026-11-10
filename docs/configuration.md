@@ -199,7 +199,7 @@ It takes deterministic steps itself and wakes an agent only for a change that ne
 
 A wake runs the configured agent headlessly in the PR's feature worktree (`codex exec resume <session>` or `claude -p --resume <session>`, resuming the worktree's newest session, or a fresh session when it has none) with a brief built from the PR: the failing check names, the last 150 lines of the failing job log, the diffstat, and the unresolved comments. The brief allows only an ordinary push and resolving the threads that push addresses: no force push, merge, auto-merge, comment, or deploy. The agent ends with `FIXED <summary>` or `STUCK <reason>`; `STUCK`, a timeout, or a push that changes nothing moves the PR to you. At most `max_wakes` run at once, one per PR. A PR whose fixes keep failing for 4 hours goes to you. Apart from arming a land-approved PR, nothing acts on a PR without a local feature worktree on its head branch, or while an interactive agent runs in that worktree.
 
-`zen sup` shows the result, 56 columns wide so it fits a phone through Agent Console: NEEDS YOU, AGENT WORKING, WAITING ON REVIEW, DEPLOYING, and LANDED TODAY, two lines per PR, then recent actions. The daemon must be restarted after `supervisor.enabled` changes.
+`zen sup` shows the result, 48 columns wide so it fits a 360px phone through Agent Console: NEEDS YOU, AGENT WORKING, WAITING ON REVIEW, DEPLOYING, and LANDED TODAY, two lines per PR, then recent actions. The daemon must be restarted after `supervisor.enabled` changes.
 
 ## Environment
 

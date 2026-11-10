@@ -8,9 +8,9 @@ import (
 	"time"
 )
 
-// Width is the view's column limit, so it fits a portrait phone through
+// Width is the view's column limit, so it fits a 360px portrait phone through
 // Agent Console.
-const Width = 56
+const Width = 48
 
 // eventTail is how many recent events the view shows.
 const eventTail = 6
