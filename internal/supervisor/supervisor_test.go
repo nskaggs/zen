@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -514,9 +515,9 @@ func TestPollDoesNotWaitOnSlowLandWatch(t *testing.T) {
 	pr.State, pr.MergedAt = "MERGED", now.Format(time.RFC3339)
 	f := newFake(t, []ghpkg.SupervisedPR{pr}, false)
 	release := make(chan struct{})
-	runs := 0
+	var runs atomic.Int32
 	f.deps.landWatch = func(context.Context, []LandEntry) (string, error) {
-		runs++
+		runs.Add(1)
 		<-release
 		return "o/r#1 url=u state=MERGED landed=yes", nil
 	}
@@ -529,6 +530,9 @@ func TestPollDoesNotWaitOnSlowLandWatch(t *testing.T) {
 	if snap, _ := LoadSnapshot(f.dir); snap.Items[0].Owner == OwnerLanded {
 		t.Fatal("landed before land-watch finished")
 	}
+	if n := runs.Load(); n != 1 {
+		t.Fatalf("runs = %d while one was in flight, want 1", n)
+	}
 	close(release)
 	waitFor(t, func() bool {
 		if err := f.Poll(context.Background()); err != nil {
@@ -537,7 +541,4 @@ func TestPollDoesNotWaitOnSlowLandWatch(t *testing.T) {
 		snap, _ := LoadSnapshot(f.dir)
 		return snap.Items[0].Owner == OwnerLanded
 	})
-	if runs < 2 {
-		t.Fatalf("runs = %d, want a fresh run after the first finished", runs)
-	}
 }
