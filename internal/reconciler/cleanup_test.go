@@ -3,6 +3,7 @@ package reconciler
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -354,5 +355,50 @@ func runCleanupGit(t *testing.T, directory string, args ...string) {
 	cmd.Dir = directory
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git %v: %v: %s", args, err, out)
+	}
+}
+
+// TestCleanupReconcile_FeatureLandWatchStages runs the real land-watch gate
+// against a stub land-watch binary.
+func TestCleanupReconcile_FeatureLandWatchStages(t *testing.T) {
+	const head = "example/mono#5 url=u state=MERGED review=APPROVED armed=true gate_pending=false reviews=1 comments=0 fail=none landed=no"
+	tests := []struct {
+		name         string
+		stage        string
+		exit         int
+		wantArchived bool
+	}{
+		{name: "no deploy stage", stage: `example/mono#5 stage=staging status=none unmatched="CI"`, wantArchived: true},
+		{name: "pending stage", stage: `example/mono#5 stage=staging status=pending run="Deploy":in_progress:u`},
+		{name: "failed stage", stage: `example/mono#5 stage=staging status=failure run="Deploy":failure:u`, exit: 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("ZEN_HOME", t.TempDir())
+			bin := t.TempDir()
+			script := fmt.Sprintf("#!/bin/sh\ncat <<'OUT'\n%s\n%s\nOUT\nexit %d\n", head, tt.stage, tt.exit)
+			if err := os.WriteFile(filepath.Join(bin, "land-watch"), []byte(script), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+			basePath := t.TempDir()
+			originPath := filepath.Join(basePath, "mono")
+			worktreePath := filepath.Join(basePath, "mono-feat")
+			initCleanupRepo(t, basePath, originPath)
+			runCleanupGit(t, originPath, "worktree", "add", "-b", "nskaggs/feat", worktreePath)
+			cfg := &config.Config{Repos: map[string]config.RepoConfig{
+				"mono": {FullName: "example/mono", BasePath: basePath},
+			}}
+			rec := NewCleanupReconciler(cfg)
+			rec.prMergeInfo = mergedInfo("", 2*time.Hour)
+			if err := rec.Reconcile(context.Background(), MakeFeatureKey("mono", 5, "mono-feat"), workqueue.Options{}); err != nil {
+				t.Fatalf("Reconcile() error: %v", err)
+			}
+			_, statErr := os.Stat(worktreePath)
+			if archived := os.IsNotExist(statErr); archived != tt.wantArchived {
+				t.Fatalf("archived = %t, want %t", archived, tt.wantArchived)
+			}
+		})
 	}
 }

@@ -110,7 +110,7 @@ func TestArchive(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			want := manifestHeader + strings.Join([]string{"repo-feature", path, "feature", got.Head, wantRef}, "\t") + "\n"
+			want := manifestHeader + strings.Join([]string{"repo-feature", path, "feature", got.Head, wantRef, got.IgnoredBackup}, "\t") + "\n"
 			if string(data) != want {
 				t.Errorf("manifest = %q, want %q", data, want)
 			}
@@ -217,4 +217,91 @@ func TestArchiveReview(t *testing.T) {
 			t.Fatal("refusal removed the worktree")
 		}
 	})
+}
+
+func TestArchiveBacksUpIgnoredFiles(t *testing.T) {
+	origin, path := removalFixture(t)
+	writeRemovalFile(t, path, ".gitignore", "*.log\nbuild/\n.zen/\n")
+	runRemovalGit(t, path, "add", ".gitignore")
+	runRemovalGit(t, path, "commit", "-m", "ignore outputs")
+	writeRemovalFile(t, path, "run.log", "log line")
+	writeRemovalFile(t, path, "build/bin/tool", "binary")
+	if err := os.Chmod(filepath.Join(path, "build/bin/tool"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("bin/tool", filepath.Join(path, "build/current")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := agent.New(agent.Claude, "").InjectContext(path, "generated"); err != nil {
+		t.Fatal(err)
+	}
+
+	dir := t.TempDir()
+	got, err := archive(origin, path, notRunning, nil, archiveDay, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantBackup := filepath.Join(dir, "2026-11-10", "repo-feature")
+	if got.IgnoredBackup != wantBackup {
+		t.Fatalf("IgnoredBackup = %q, want %q", got.IgnoredBackup, wantBackup)
+	}
+	for name, want := range map[string]string{"run.log": "log line", "build/bin/tool": "binary"} {
+		data, err := os.ReadFile(filepath.Join(wantBackup, name))
+		if err != nil || string(data) != want {
+			t.Errorf("backup %s = %q, %v; want %q", name, data, err, want)
+		}
+	}
+	if info, err := os.Stat(filepath.Join(wantBackup, "build/bin/tool")); err != nil || info.Mode().Perm() != 0o755 {
+		t.Errorf("backup kept mode %v, %v; want 0755", info.Mode(), err)
+	}
+	if target, err := os.Readlink(filepath.Join(wantBackup, "build/current")); err != nil || target != "bin/tool" {
+		t.Errorf("backup symlink = %q, %v; want bin/tool", target, err)
+	}
+	if _, err := os.Lstat(filepath.Join(wantBackup, ".zen")); !os.IsNotExist(err) {
+		t.Error("generated context was backed up")
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "2026-11-10.tsv"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(string(data), "\t"+wantBackup+"\n") {
+		t.Errorf("manifest does not end with the backup dir: %q", data)
+	}
+}
+
+func TestArchiveWithoutIgnoredFilesHasNoBackup(t *testing.T) {
+	origin, path := removalFixture(t)
+	dir := t.TempDir()
+	got, err := archive(origin, path, notRunning, nil, archiveDay, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.IgnoredBackup != "" {
+		t.Fatalf("IgnoredBackup = %q, want empty", got.IgnoredBackup)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "2026-11-10")); !os.IsNotExist(err) {
+		t.Fatal("backup dir created with nothing to back up")
+	}
+}
+
+func TestAppendManifestIsIdempotent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "2026-11-10.tsv")
+	row := []string{"repo-feature", "/w/repo-feature", "feature", "abc", "refs/archive/2026-11-10/repo-feature", ""}
+	for range 2 {
+		if err := appendManifest(path, row); err != nil {
+			t.Fatal(err)
+		}
+	}
+	other := append([]string(nil), row...)
+	other[3] = "def"
+	if err := appendManifest(path, other); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lines := strings.Split(strings.TrimSuffix(string(data), "\n"), "\n"); len(lines) != 3 {
+		t.Fatalf("manifest = %q, want a header, the row once, and the other head", data)
+	}
 }

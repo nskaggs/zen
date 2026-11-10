@@ -1,8 +1,10 @@
 package worktree
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -23,7 +25,7 @@ const ArchiveCommitMessage = "wip: archive uncommitted work before worktree remo
 var ErrArchiveRefExists = errors.New("refusing to move an existing archive ref")
 
 // manifestHeader is the first line of each day's archive manifest.
-const manifestHeader = "worktree\tpath\tbranch\thead\tarchive_ref\n"
+const manifestHeader = "worktree\tpath\tbranch\thead\tarchive_ref\tignored_backup\n"
 
 // Archived describes one archived worktree.
 type Archived struct {
@@ -34,15 +36,19 @@ type Archived struct {
 	Ref      string `json:"archive_ref"`
 	WIP      bool   `json:"wip"` // true when uncommitted work was committed first
 	Manifest string `json:"manifest"`
+	// IgnoredBackup is the directory holding copies of the worktree's
+	// git-ignored files, empty when it had none.
+	IgnoredBackup string `json:"ignored_backup,omitempty"`
 }
 
 // Archive keeps everything a worktree holds and then removes it. Uncommitted
 // tracked changes and untracked files (honoring .gitignore, and leaving out
 // Zen-generated context) are committed with ArchiveCommitMessage on the
 // checked-out branch or detached HEAD. HEAD is then pinned at
-// refs/archive/<YYYY-MM-DD>/<worktree name>, a row is appended to that day's
-// manifest under <zen dir>/state/archive/, and the worktree is removed from
-// the main checkout. Branches are never deleted. Ignored files are not kept.
+// refs/archive/<YYYY-MM-DD>/<worktree name>, git-ignored files are copied to
+// <zen dir>/state/archive/<YYYY-MM-DD>/<worktree name>/, a row is appended
+// to that day's manifest under <zen dir>/state/archive/, and the worktree is
+// removed from the main checkout. Branches are never deleted.
 // It refuses when an agent is running in the worktree. A missing worktree is
 // already gone and returns nil, nil.
 func Archive(originPath, worktreePath string) (*Archived, error) {
@@ -119,8 +125,12 @@ func archive(originPath, worktreePath string, runningIn func(string) bool, verif
 	if err := pinRef(worktreePath, ref, head); err != nil {
 		return nil, err
 	}
+	backup, err := copyIgnored(worktreePath, filepath.Join(dir, day, name), owned)
+	if err != nil {
+		return nil, err
+	}
 	manifest := filepath.Join(dir, day+".tsv")
-	if err := appendManifest(manifest, name, worktreePath, branch, head, ref); err != nil {
+	if err := appendManifest(manifest, []string{name, worktreePath, branch, head, ref, backup}); err != nil {
 		return nil, err
 	}
 
@@ -138,7 +148,7 @@ func archive(originPath, worktreePath string, runningIn func(string) bool, verif
 		}
 		return nil, fmt.Errorf("git worktree remove: %w: %s", err, strings.TrimSpace(string(out)))
 	}
-	return &Archived{Name: name, Path: worktreePath, Branch: branch, Head: head, Ref: ref, WIP: wip, Manifest: manifest}, nil
+	return &Archived{Name: name, Path: worktreePath, Branch: branch, Head: head, Ref: ref, WIP: wip, Manifest: manifest, IgnoredBackup: backup}, nil
 }
 
 // commitWIP stages every change except Zen-generated context and commits it
@@ -187,24 +197,100 @@ func pinRef(worktreePath, ref, head string) error {
 	return nil
 }
 
-func appendManifest(path, name, worktreePath, branch, head, ref string) error {
+// copyIgnored copies every git-ignored file in worktreePath, except
+// Zen-generated context, to dest, keeping relative paths, modes, and
+// symlinks. It returns dest, or "" when there was nothing to copy.
+func copyIgnored(worktreePath, dest string, owned map[string]struct{}) (string, error) {
+	cmd := exec.Command("git", "ls-files", "--others", "--ignored", "--exclude-standard", "-z")
+	cmd.Dir = worktreePath
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("list ignored files: %w", err)
+	}
+	copied := false
+	for _, raw := range bytes.Split(out, []byte{0}) {
+		rel := string(raw)
+		if rel == "" {
+			continue
+		}
+		if _, ok := owned[filepath.ToSlash(rel)]; ok {
+			continue
+		}
+		if err := copyEntry(filepath.Join(worktreePath, rel), filepath.Join(dest, rel)); err != nil {
+			return "", fmt.Errorf("back up ignored file %s: %w", rel, err)
+		}
+		copied = true
+	}
+	if !copied {
+		return "", nil
+	}
+	return dest, nil
+}
+
+// copyEntry copies one file or symlink from src to dst, replacing dst.
+func copyEntry(src, dst string) error {
+	info, err := os.Lstat(src)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+	if err := os.Remove(dst); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		target, err := os.Readlink(src)
+		if err != nil {
+			return err
+		}
+		return os.Symlink(target, dst)
+	}
+	if !info.Mode().IsRegular() {
+		return nil // sockets, FIFOs, and devices hold no content to keep
+	}
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	outFile, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, info.Mode().Perm())
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(outFile, in); err != nil {
+		outFile.Close()
+		return err
+	}
+	return outFile.Close()
+}
+
+// appendManifest appends row unless a row for the same worktree, head, and
+// archive ref is already there, so a retried archive writes it once.
+func appendManifest(path string, row []string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("create archive manifest dir: %w", err)
+	}
+	existing, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("read archive manifest: %w", err)
+	}
+	for _, line := range strings.Split(string(existing), "\n") {
+		f := strings.Split(line, "\t")
+		if len(f) >= 5 && f[0] == row[0] && f[3] == row[3] && f[4] == row[4] {
+			return nil
+		}
 	}
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
 		return fmt.Errorf("open archive manifest: %w", err)
 	}
 	defer f.Close()
-	info, err := f.Stat()
-	if err != nil {
-		return fmt.Errorf("inspect archive manifest: %w", err)
+	line := strings.Join(row, "\t") + "\n"
+	if len(existing) == 0 {
+		line = manifestHeader + line
 	}
-	row := strings.Join([]string{name, worktreePath, branch, head, ref}, "\t") + "\n"
-	if info.Size() == 0 {
-		row = manifestHeader + row
-	}
-	if _, err := f.WriteString(row); err != nil {
+	if _, err := f.WriteString(line); err != nil {
 		return fmt.Errorf("write archive manifest: %w", err)
 	}
 	return nil

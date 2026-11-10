@@ -32,6 +32,32 @@ summary open=1 merged_ok=1 merged_failed=0 pending_deploy=1 waiting_release=0 la
 	}
 }
 
+func TestParseLandWatchStages(t *testing.T) {
+	const head = "o/r#7 url=u state=MERGED review=APPROVED armed=true gate_pending=false reviews=1 comments=0 fail=none landed=no\n"
+	tests := []struct {
+		name     string
+		out      string
+		verified bool
+	}{
+		{name: "no deploy stage ran", out: head + `o/r#7 stage=staging status=none unmatched="CI","Lint"`, verified: true},
+		{name: "pending stage", out: head + `o/r#7 stage=staging status=pending run="Deploy":in_progress:u`},
+		{name: "failed stage", out: head + `o/r#7 stage=staging status=failure run="Deploy":failure:u`},
+		{name: "staging none but release waiting", out: head + "o/r#7 stage=staging status=none\no/r#7 stage=release status=waiting tag=v*\no/r#7 stage=prod status=waiting"},
+		{name: "no stage lines", out: head},
+		{name: "open PR", out: "o/r#7 url=u state=OPEN review=NONE armed=false gate_pending=false reviews=0 comments=0 fail=none"},
+		{name: "landed", out: "o/r#7 url=u state=MERGED landed=yes\no/r#7 stage=staging status=success run=\"Deploy\":success:u", verified: true},
+		{name: "other PR's stage lines do not count", out: head + "o/r#70 stage=staging status=none"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			verified, detail := parseLandWatch(tt.out+"\n", "o/r", 7)
+			if verified != tt.verified || detail == "" {
+				t.Fatalf("parseLandWatch() = %t, %q; want %t", verified, detail, tt.verified)
+			}
+		})
+	}
+}
+
 func TestLandWatchVerifiedWithoutBinary(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 	verified, detail, err := landWatchVerified(t.Context(), "chainguard-dev/mono", 7)

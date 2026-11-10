@@ -23,7 +23,7 @@ type prByHeadFunc func(ctx context.Context, fullRepo, headOwner, branch string) 
 // CleanupReconciler archives (see worktree.Archive) the worktrees of merged
 // PRs: review worktrees once cleanup_after_merge has passed, and work streams
 // (feature worktrees) once their PR has also landed, meaning land-watch
-// verified every deploy stage of the merge commit.
+// verified every deploy stage of the merge commit or found none to run.
 type CleanupReconciler struct {
 	cfg            *config.Config
 	prMergeInfo    prMergeInfoFunc

@@ -22,9 +22,8 @@ const landWatchTimeout = 5 * time.Minute
 type deployVerifiedFunc func(ctx context.Context, fullRepo string, prNumber int) (verified bool, detail string, err error)
 
 // landWatchVerified asks land-watch (without --arm, so it only reads) about
-// one PR. A deploy is verified only when land-watch prints landed=yes for it,
-// which requires every deploy stage it found for the merge commit to have
-// succeeded. Without land-watch on PATH nothing is verified.
+// one PR. See parseLandWatch for what counts as verified. Without land-watch
+// on PATH nothing is verified.
 func landWatchVerified(ctx context.Context, fullRepo string, prNumber int) (bool, string, error) {
 	bin, err := exec.LookPath("land-watch")
 	if err != nil {
@@ -64,19 +63,52 @@ func landWatchVerified(ctx context.Context, fullRepo string, prNumber int) (bool
 }
 
 // parseLandWatch finds the PR's summary line in land-watch output and reports
-// whether it says landed=yes. detail is that line, or empty when absent.
+// whether its deploy is verified: landed=yes, or a merged PR whose every stage
+// line says status=none. land-watch prints a staging stage line for each
+// merged PR (plus release and prod lines for tag-released repos), and
+// status=none means no push run of the merge commit matched its deploy
+// pattern, so there was nothing to deploy. A pending, waiting, or failed
+// stage is never verified. detail is the summary line, or empty when absent.
 func parseLandWatch(out, fullRepo string, prNumber int) (bool, string) {
 	prefix := fmt.Sprintf("%s#%d ", fullRepo, prNumber)
+	var summary string
+	merged, landed := false, false
+	stages, noneStages := 0, 0
 	for _, line := range strings.Split(out, "\n") {
-		if !strings.HasPrefix(line, prefix) || strings.HasPrefix(line, prefix+"stage=") {
+		if !strings.HasPrefix(line, prefix) {
 			continue
 		}
-		for _, field := range strings.Fields(line) {
-			if field == "landed=yes" {
-				return true, line
+		fields := strings.Fields(strings.TrimPrefix(line, prefix))
+		if len(fields) > 0 && strings.HasPrefix(fields[0], "stage=") {
+			stages++
+			for _, f := range fields {
+				if f == "status=none" {
+					noneStages++
+				}
+			}
+			continue
+		}
+		if summary != "" {
+			continue
+		}
+		summary = line
+		for _, f := range fields {
+			switch f {
+			case "landed=yes":
+				landed = true
+			case "state=MERGED":
+				merged = true
 			}
 		}
-		return false, line
 	}
-	return false, ""
+	if summary == "" {
+		return false, ""
+	}
+	if landed {
+		return true, summary
+	}
+	if merged && stages > 0 && noneStages == stages {
+		return true, summary + " (no deploy stage ran)"
+	}
+	return false, summary
 }
