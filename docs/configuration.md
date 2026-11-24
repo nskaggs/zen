@@ -65,6 +65,12 @@ slack:
   default_repo: mono     # short repo name worktrees are created in
   poll_interval: "5m"
   ack_reaction: eyes      # reaction added on pickup, default "eyes"
+
+supervisor:
+  enabled: true
+  poll_interval: "2m"    # default "2m"
+  wake_timeout: "30m"    # limit for one agent wake, default "30m"
+  max_wakes: 3           # agent wakes running at once, default 3
 ```
 
 The daemon re-reads `config.yaml` on every poll tick. Changes to `poll_interval`, `authors`, `repos`, and other settings take effect without restarting.
@@ -175,6 +181,26 @@ Setup:
 
 If `slack.enabled` is true but `ZEN_SLACK_TOKEN` is unset, or `auth.test` fails at startup, the daemon logs a warning and runs with the Slack watcher disabled rather than failing to start.
 
+## PR supervisor
+
+An opt-in daemon loop that drives your own open PRs (every configured repo, `author:@me`) to ready-to-merge, and, once you approve landing with `zen land`, through merge and deploy. Each poll is one GitHub GraphQL call covering your open PRs and the ones merged in the last day; it fetches individual checks only for a failing PR, and `mergeStateStatus` only for an approved one, because GitHub is slow to compute that field in a search.
+
+It takes deterministic steps itself and wakes an agent only for a change that needs judgment:
+
+| State | Step |
+|---|---|
+| Behind its base, otherwise ready | `gh pr update-branch`, once per head |
+| A check `TIMED_OUT`, `CANCELLED`, `STARTUP_FAILURE`, or `STALE` | `gh run rerun --failed`, once per head; a repeat goes to you |
+| A failing check named like `*Attestation*` | Goes to you; only you can attest, so no agent is woken |
+| A change-caused check failure or a merge conflict | Wake an agent, once per head |
+| Changes requested or an unresolved review thread (not your own reply) | Wake an agent, once per set of comments |
+| Land-approved | `land-watch --arm` arms auto-merge once approvals exist |
+| Merged | `land-watch` reports the deploy; the cleanup loop archives the worktree once it is verified |
+
+A wake runs the configured agent headlessly in the PR's feature worktree (`codex exec resume <session>` or `claude -p --resume <session>`, resuming the worktree's newest session, or a fresh session when it has none) with a brief built from the PR: the failing check names, the last 150 lines of the failing job log, the diffstat, and the unresolved comments. The brief allows only an ordinary push and resolving the threads that push addresses: no force push, merge, auto-merge, comment, or deploy. The agent ends with `FIXED <summary>` or `STUCK <reason>`; `STUCK`, a timeout, or a push that changes nothing moves the PR to you. At most `max_wakes` run at once, one per PR. A PR whose fixes keep failing for 4 hours goes to you. Apart from arming a land-approved PR, nothing acts on a PR without a local feature worktree on its head branch, or while an interactive agent runs in that worktree.
+
+`zen sup` shows the result, 48 columns wide so it fits a 360px phone through Agent Console: NEEDS YOU, AGENT WORKING, WAITING ON REVIEW, DEPLOYING, and LANDED TODAY, two lines per PR, then recent actions. The daemon must be restarted after `supervisor.enabled` changes.
+
 ## Environment
 
 `ZEN_HOME` overrides the config/state directory (default `~/.zen`). Functional tests and a second daemon use this so they do not share `config.yaml` or `last_check.json` with a day-to-day install.
@@ -192,6 +218,12 @@ All state lives in `~/.zen/state/` (or `$ZEN_HOME/state/`):
 | `sessions.json` | Cached agent session states (updated every 10s by daemon) |
 | `slack_seen.json` | Message keys already processed by the Slack task watcher |
 | `slack_origins.json` | Worktree path → originating Slack thread, for the completion DM |
+| `land.json` | PRs you approved for landing (`zen land`); a landed PR leaves the list |
+| `supervisor/snapshot.json` | The PR supervisor's last poll, read by `zen sup` |
+| `supervisor/board.md` | The same view as Markdown, for agents |
+| `supervisor/events.jsonl` | Every supervisor action and wake result |
+| Merged with no deploy in flight, older than `watch.cleanup_after_merge` | Shown under LANDED TODAY, not DEPLOYING |
+| `supervisor/memory.json` | Per-PR state between polls: last handled trigger, reruns, branch updates |
 
 ## Upgrading
 

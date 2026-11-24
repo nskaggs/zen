@@ -28,6 +28,44 @@ type Config struct {
 	IgnoreDrafts bool                  `yaml:"ignore_drafts"`
 	Watch        WatchConfig           `yaml:"watch"`
 	Slack        SlackConfig           `yaml:"slack"`
+	Supervisor   SupervisorConfig      `yaml:"supervisor"`
+}
+
+// SupervisorConfig configures the PR supervisor: the daemon loop that drives
+// the user's own open PRs to ready-to-merge and, once landing is approved
+// with `zen land`, through merge and deploy. Disabled unless Enabled is true.
+type SupervisorConfig struct {
+	Enabled      bool   `yaml:"enabled"`
+	PollInterval string `yaml:"poll_interval"` // default "2m"
+	WakeTimeout  string `yaml:"wake_timeout"`  // wall-clock limit for one agent wake, default "30m"
+	MaxWakes     int    `yaml:"max_wakes"`     // agent wakes running at once, default 3
+}
+
+// PollIntervalDuration returns the supervisor poll interval, default 2m.
+func (s SupervisorConfig) PollIntervalDuration() time.Duration {
+	return durationOr(s.PollInterval, 2*time.Minute)
+}
+
+// WakeTimeoutDuration returns the per-wake limit, default 30m.
+func (s SupervisorConfig) WakeTimeoutDuration() time.Duration {
+	return durationOr(s.WakeTimeout, 30*time.Minute)
+}
+
+// GetMaxWakes returns how many agent wakes may run at once, default 3.
+func (s SupervisorConfig) GetMaxWakes() int {
+	if s.MaxWakes > 0 {
+		return s.MaxWakes
+	}
+	return 3
+}
+
+func durationOr(v string, def time.Duration) time.Duration {
+	if v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			return d
+		}
+	}
+	return def
 }
 
 // SlackConfig holds configuration for the Slack task watcher: polling for the
