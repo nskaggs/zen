@@ -269,7 +269,7 @@ func TestBuildBrief(t *testing.T) {
 	}
 	is := Issues{Conflict: true, Failing: []string{"test-unit"}, Threads: []ghpkg.ThreadComment{{URL: "https://c/1", Body: "multi\nline   body"}}}
 	b := BuildBrief(BriefInput{URL: "https://github.com/o/r/pull/1", Head: "abcdef1234", Base: "main", Issues: is, Log: log.String(), Diffstat: " a.go | 2 +-"})
-	for _, want := range []string{"(head abcdef1)", "Merge conflict with main", "test-unit", "line 399", "a.go | 2 +-", "multi line body (https://c/1)", "Never force push", `"FIXED <what you changed>"`} {
+	for _, want := range []string{"(head abcdef1)", "Merge conflict with main", "test-unit", "line 399", "a.go | 2 +-", "multi line body (https://c/1)", "Never force push", "leave its setting as you found it", `"FIXED <what you changed>"`} {
 		if !strings.Contains(b, want) {
 			t.Fatalf("brief missing %q:\n%s", want, b)
 		}
