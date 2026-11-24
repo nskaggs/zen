@@ -5,10 +5,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
-	"strings"
 	"sync"
-	"syscall"
+	"time"
 
 	"github.com/mgreau/zen/internal/config"
 	"github.com/mgreau/zen/internal/ui"
@@ -18,7 +16,7 @@ import (
 var GitMu sync.Mutex
 
 // CleanStaleLocks removes stale index.lock files from worktrees of the given repo.
-// A lock is considered stale if the PID inside it is no longer running.
+// A lock is stale once nothing has written it for staleLockAge.
 func CleanStaleLocks(cfg *config.Config, repo string) {
 	basePath := cfg.RepoBasePath(repo)
 	if basePath == "" {
@@ -83,29 +81,38 @@ func CleanupFailedAdd(originPath, worktreePath, branch string) {
 // execCommand is a variable for testing.
 var execCommand = exec.Command
 
-// RemoveStaleLock removes an index.lock file only if the holding process
-// is no longer running. Safe to call if the file does not exist.
+// staleLockAge is how long an index.lock must go unmodified before it is
+// stale. Git writes no PID into index.lock: the file is the new index, and a
+// checkout of a large repository holds it for minutes before its last write.
+const staleLockAge = 30 * time.Minute
+
+// RemoveStaleLock removes an index.lock file only if nothing has written it
+// for staleLockAge. Safe to call if the file does not exist.
 func RemoveStaleLock(lockFile, name string) {
-	data, err := os.ReadFile(lockFile)
+	info, err := os.Stat(lockFile)
 	if err != nil {
 		return // file doesn't exist or can't be read
 	}
-
-	// Try to extract PID from the lock file
-	pidStr := strings.TrimSpace(string(data))
-	// git writes host info too; extract first number
-	for _, field := range strings.Fields(pidStr) {
-		pid, err := strconv.Atoi(field)
-		if err != nil {
-			continue
-		}
-		// Check if process is alive
-		if err := syscall.Kill(pid, 0); err == nil {
-			return // process is alive, lock is legitimate
-		}
-		break
+	if time.Since(info.ModTime()) < staleLockAge || openByAProcess(lockFile) {
+		return // a git process may still be writing it
+	}
+	// Another scan may have removed it and git taken a new lock since.
+	if now, err := os.Stat(lockFile); err != nil || !os.SameFile(info, now) {
+		return
 	}
 
 	ui.LogWarn(fmt.Sprintf("Removing stale index.lock for worktree: %s", name))
 	os.Remove(lockFile)
+}
+
+// openByAProcess reports whether any process has path open, read from
+// /proc. Where /proc is absent it reports false.
+func openByAProcess(path string) bool {
+	fds, _ := filepath.Glob("/proc/[0-9]*/fd/*")
+	for _, fd := range fds {
+		if target, err := os.Readlink(fd); err == nil && target == path {
+			return true
+		}
+	}
+	return false
 }
